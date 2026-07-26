@@ -1,0 +1,49 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# ---- GNU Radio ----
+# GRC generates a .py alongside each .grc; the doc says keep generated .py
+# under version control, so we do NOT ignore top-level *.py. We only drop the
+# stray compiled artifacts GRC/py leaves behind.
+*.pyc
+
+# ---- Conda / radioconda ----
+# Never commit the radioconda environment.
+envs/
+pkgs/
+.conda/
+*.conda
+*.tar.bz2
+
+# ---- Visual Studio / .NET / Avalonia ----
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.userprefs
+*.cache
+[Dd]ebug/
+[Rr]elease/
+*.dll
+*.exe
+*.pdb
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Editor ----
+.idea/
+*.swp
+
+# ---- SDR capture artifacts (large; keep out of git) ----
+*.iq
+*.wav
+*.sigmf-data
