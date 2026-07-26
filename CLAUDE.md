@@ -31,15 +31,42 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
    - git: `git config http.sslBackend schannel` (uses Windows cert store). Already set on this repo.
    - When running installs/network via Claude Code's Bash/PowerShell tools, use `dangerouslyDisableSandbox: true` (the sandbox proxy adds its own untrusted TLS layer on top of Norton's).
 2. **gr-sdrplay3 gain is gain _reduction_ in dB** (higher = less gain): IF `[20-59]` (default 40), RF `[0..]` (default 0). Negative values clamp to min reduction = max gain → ADC overload. Enable IF AGC (`set_gain_mode(True)` + `set_agc_setpoint(-30)`) to avoid overload; raise RF reduction for strong signals.
+3. **Dual-tuner (diversity/independent) init is UNRELIABLE in gr-sdrplay3.** It inits cleanly only ~once per SDRConnect reset, then `sdrplay_api_Fail` (or a silent crash) and wedges the device. Not hardware — single-tuner is rock-solid and SDRConnect/SDRuno switch modes fine. Workaround: open & close SDRConnect once to reset the API, then run; if wedged, `Restart-Service SDRplayAPIService` (may need a physical USB power-cycle). Real fix = build gr-sdrplay3 from source / retry-reset wrapper (a **shack task**). In diversity mode use **single-form** setters (freq+gain); per-tuner/(A,B) freq setter **segfaults** (per-tuner gain is independent-RX only). Details: [`docs/SETUP_NOTES.md`](docs/SETUP_NOTES.md).
+4. **For multiple receivers in one band, use single-tuner + multiple VRXs** (freq-xlating demod chains) — reliable, no dual-tuner needed. Dual-tuner independent RX is only for receivers on *different* bands.
 
-## Development stages (see context doc for detail)
+## Development stages / current state
 
-1. Hardware proof — `server/python/poc/hardware_verify.py` (Qt spectrum + waterfall) ✅
-2. SSB demod — `server/python/poc/ssb_demod.py` (`--freq/--center/--mode/--rf-gr/--agc`) ✅
-3. **Diversity** — dual coherent streams → phase/amplitude correction → MRC combiner ← next, highest risk
-4. ZMQ introduction — headless flowgraph + REQ/REP control; Avalonia client begins
+1. **Hardware proof + live monitor** — `server/python/poc/hardware_verify.py`
+   (Qt spectrum + waterfall + SSB audio; ▼/▲ tuning 100k/5k/500Hz, LSB/USB,
+   `--span-khz` zoom) ✅
+2. **SSB demod** — `server/python/poc/ssb_demod.py`
+   (`--freq/--center/--mode/--rf-gr/--if-gr/--agc/--bw`) ✅
+3. **Diversity** — `server/python/poc/diversity_rx.py`: dual-tuner source →
+   `DiversityCombiner` (phase/amp align + MRC) → SSB → audio. Combiner proven
+   (unit test `test_combiner.py`; decoded FT8 on hardware). ⚠️ dual-tuner init
+   unreliable (gotcha #3) — real combining-gain measurement is a shack task.
+4. **ZMQ / headless server** — IN PROGRESS.
+   - Contract: [`protocol/messages.md`](protocol/messages.md) v0.1 (approved).
+   - Server: `server/python/headless/server.py` — single-tuner capture,
+     spectrum + multi-VRX audio over ZMQ, dynamic VRX via lock()/unlock().
+     Validated end-to-end. Reference client: `example_client.py`.
+   - **NEXT: the Avalonia C# client** (`client/`, not started) — NetMQ to the
+     three sockets, render waterfall from float32 frames, play int16 audio,
+     drive tuning/VRX via control. (C# build/run is on the VS side, not runnable
+     from Claude Code here.)
 
-GRC for Stages 1–3; programmatic Python flowgraphs (`server/python/headless/`) for Stage 4+. Commit both `.grc` and generated `.py`.
+Other reliable PoCs: `multi_vrx.py` (multiple in-band VRXs, single tuner),
+`mode_switch.py` (HAL: single/diversity/independent source factory).
+
+GRC for Stages 1–3; programmatic Python flowgraphs (`server/python/headless/`)
+for Stage 4+. Commit both `.grc` and generated `.py`.
+
+### How to run
+- Server: `C:\Users\MABY\radioconda\python.exe server\python\headless\server.py --center 7.15e6`
+  (then `example_client.py` to smoke-test). Ports: control 5555, stream 5556, audio 5557.
+- Any PoC: `C:\Users\MABY\radioconda\python.exe server\python\poc\<script>.py --help`
+- Testing DSP without hardware: construct blocks / run `test_combiner.py`.
+  Hardware tests via Claude Code need `dangerouslyDisableSandbox: true`.
 
 ## Conventions
 
