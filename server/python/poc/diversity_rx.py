@@ -102,12 +102,16 @@ class DiversityReceiver(gr.top_block):
         self.src.set_sample_rate(SOURCE_RATE)       # fed the dual-tuner ADC rate
         self.src.set_center_freq(freq)              # single-form: both tuners same freq
         self.src.set_bandwidth(1_536_000)           # dual-tuner is Low-IF, fixed BW
-        self.src.set_gain_mode(agc)
+        # Diversity has TWO independent front ends — set gain on BOTH tuners,
+        # or one branch stays hot and overloads. Per-tuner gain setters are
+        # safe in diversity mode (unlike the per-tuner frequency setter).
+        for tuner in (0, 1):
+            self.src.set_gain_mode(agc, tuner)
+            if not agc:
+                self.src.set_gain(if_gr, "IF", tuner)
+            self.src.set_gain(rf_gr, "RF", tuner)
         if agc:
             self.src.set_agc_setpoint(-30)
-        else:
-            self.src.set_gain(if_gr, "IF")
-        self.src.set_gain(rf_gr, "RF")
         self.src.set_dc_offset_mode(True)
         self.src.set_iq_balance_mode(True)
 
