@@ -93,6 +93,39 @@ git config http.sslBackend schannel
 ```
 (Set on this repo; set `--global` if other repos hit the same SSL error.)
 
+## Stage 3 — dual-tuner / diversity (gr-sdrplay3) bring-up
+
+`rspduo_mode` options: `Single Tuner`, `Dual Tuner (diversity reception)`,
+`Dual Tuner (independent RX)`, `Master`, `Master (SR=8Mhz)`, `Slave`.
+Independent two-tuner use (two separate frequencies) = **`Dual Tuner
+(independent RX)`** with `set_center_freq(freq_A, freq_B)`.
+
+Working **diversity** source config (see `server/python/poc/diversity_rx.py`):
+- `rspduo_mode="Dual Tuner (diversity reception)"`, `antenna="Both Tuners"`,
+  `stream_args(output_type="fc32", channels_size=2)`.
+- `set_sample_rate(2_000_000)` — dual-tuner runs the ADC at 2 MHz. In the GRC
+  example this is the `sample_rate_non_single_tuner` field; the `sample_rate`
+  (62.5e3) field is used **only** in Single Tuner mode — a red herring.
+- `set_center_freq(freq)` **single-form** (both tuners locked to same freq),
+  `set_bandwidth(1_536_000)` (dual-tuner is Low-IF, fixed BW), single-form gains.
+
+**Gotchas:**
+1. In diversity mode use **single-form** setters. The per-tuner
+   `set_center_freq(freq_A, freq_B)` / `set_gain(gA, gB, name)` forms are for
+   *independent RX* mode and **segfault** in diversity mode ("device is not in
+   independent RX mode").
+2. gr-sdrplay3 dual-tuner **init can fail** (`sdrplay_api_Init() Error:
+   sdrplay_api_Fail`) on Windows + API 3.15 (gr-sdrplay3 issues #48, #54).
+   Fix: launch and close **SDRConnect** once to reset the API state, then run.
+   A failed init **wedges the device** ("device not found") — recover with
+   `Restart-Service SDRplayAPIService`. SDRConnect confirms the hardware/API
+   fully support diversity, so this is a gr-sdrplay3-layer issue, not hardware.
+
+**Result:** streams confirmed phase-coherent (correction phase stable ~-23°
+over the run); combiner estimates a stable complex correction and the combined
+power sits above both branches. Combiner algorithm unit-tested in
+`test_combiner.py` (phase error <0.01 rad, within ~0.15 dB of ideal MRC).
+
 ## Stage 1 result
 
 Headless smoke test (RSPduo single tuner, 40 m, 2 MS/s, 400k samples):

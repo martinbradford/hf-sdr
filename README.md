@@ -41,8 +41,11 @@ hf-sdr/
 - [x] radioconda / GNU Radio 3.10.12 installed (Python 3.12.9)
 - [x] SDRPlay API service running
 - [x] `gnuradio-sdrplay3` 3.11.0.8 installed (see [docs/SETUP_NOTES.md](docs/SETUP_NOTES.md))
-- [x] Stage 1 — hardware proof: IQ confirmed flowing from RSP Duo (headless smoke test)
-- [ ] Stage 1 — visual confirmation (`server/python/poc/hardware_verify.py`, Qt waterfall)
+- [x] Stage 1 — hardware proof + live monitor (`server/python/poc/hardware_verify.py`)
+- [x] Stage 2 — SSB demod to audio (`server/python/poc/ssb_demod.py`)
+- [~] Stage 3 — diversity: dual-tuner source + MRC combiner working; coherence
+  confirmed (`server/python/poc/diversity_rx.py`). Real combining gain pending
+  a two-antenna shack test.
 
 ## Development stages
 
