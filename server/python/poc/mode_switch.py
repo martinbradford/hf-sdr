@@ -93,6 +93,8 @@ def build_source(mode, freq_a, freq_b, agc, if_gr, rf_gr):
         src.set_bandwidth(1_536_000)
         for tuner in (0, 1):                     # per-tuner gain valid here
             _apply_gain(src, agc, if_gr, rf_gr, tuner=tuner)
+        if agc:
+            src.set_agc_setpoint(-30)            # else IF AGC targets too high -> constant overload
         nchan = 2
 
     else:
