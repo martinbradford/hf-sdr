@@ -7,10 +7,12 @@ Stage 1 — Hardware Proof + live monitor.
                    └─→ tune → sideband filter → complex_to_real → AGC
                         → resample → audio out   (listen to band centre)
 
-Proves the RSP Duo talks to gr-sdrplay3 AND lets you fine-tune by ear: the
+Proves the RSP Duo talks to gr-sdrplay3 AND lets you tune by ear. The
 frequency readout shows the current tuned frequency (= display centre = what
-you hear), and the -/+ buttons retune in 500 Hz steps. Bring a signal to the
-centre line of the waterfall, then nudge to zero-beat it.
+you hear). Tuning buttons step in 100 kHz / 5 kHz / 500 Hz (down and up), and
+LSB/USB buttons switch sideband live. Roam with the coarse buttons, bring a
+signal to the centre line of the waterfall, then nudge with 500 Hz to
+zero-beat it.
 
 Requires: radioconda (GNU Radio 3.10.x) + gr-sdrplay3, SDRPlay API running.
 Launch from a radioconda prompt:
@@ -19,7 +21,6 @@ Launch from a radioconda prompt:
     python hardware_verify.py --freq 7.2e6 --mode usb
 
 Notes:
-- Tuning is 500 Hz/step (fine); pass --freq to jump near a signal first.
 - The sideband filter (200-2700 Hz) rejects the DC/LO spike, so listening at
   centre is clean.
 """
@@ -48,7 +49,9 @@ SOURCE_RATE = 2_000_000      # RSPduo output rate
 DECIM = 40                   # -> 50 kHz intermediate rate
 INTER_RATE = SOURCE_RATE // DECIM
 AUDIO_RATE = 48_000
-STEP_HZ = 500                # fine tuning step for the -/+ buttons
+FINE_STEP = 500              # fine (zero-beat) tuning step, Hz
+MED_STEP = 5_000             # medium tuning step, Hz
+COARSE_STEP = 100_000        # coarse (roam) tuning step, Hz
 FFT_SIZE = 2048
 
 
@@ -111,20 +114,44 @@ class HardwareMonitor(gr.top_block, Qt.QWidget):
         self.vol = blocks.multiply_const_ff(0.5)
         self.audio_sink = audio.sink(AUDIO_RATE, "", True)
 
-        # ---- Tuning controls ---------------------------------------------
-        controls = Qt.QHBoxLayout()
-        down_btn = Qt.QPushButton("◀  −500 Hz")
-        up_btn = Qt.QPushButton("+500 Hz  ▶")
+        # ---- Frequency readout -------------------------------------------
         self.freq_label = Qt.QLabel()
         f = self.freq_label.font(); f.setPointSize(16); f.setBold(True)
         self.freq_label.setFont(f)
         self.freq_label.setAlignment(Qt.Qt.AlignCenter)
-        down_btn.clicked.connect(self._tune_down)
-        up_btn.clicked.connect(self._tune_up)
-        controls.addWidget(down_btn)
-        controls.addWidget(self.freq_label, 1)
-        controls.addWidget(up_btn)
-        self._layout.addLayout(controls)
+
+        # ---- Tuning bar: coarse / medium / fine, down then up ------------
+        tuning = Qt.QHBoxLayout()
+        down_steps = (("◀ −100k", -COARSE_STEP), ("◀ −5k", -MED_STEP),
+                      ("◀ −500", -FINE_STEP))
+        up_steps = (("+500 ▶", FINE_STEP), ("+5k ▶", MED_STEP),
+                    ("+100k ▶", COARSE_STEP))
+        for text, delta in down_steps:
+            b = Qt.QPushButton(text)
+            b.clicked.connect(lambda _, d=delta: self._retune(self.vfo + d))
+            tuning.addWidget(b)
+        tuning.addWidget(self.freq_label, 1)
+        for text, delta in up_steps:
+            b = Qt.QPushButton(text)
+            b.clicked.connect(lambda _, d=delta: self._retune(self.vfo + d))
+            tuning.addWidget(b)
+        self._layout.addLayout(tuning)
+
+        # ---- Mode: LSB / USB (exclusive) ---------------------------------
+        modes = Qt.QHBoxLayout()
+        modes.addStretch(1)
+        self.mode_group = Qt.QButtonGroup(self)
+        self.mode_group.setExclusive(True)
+        for m in ("lsb", "usb"):
+            b = Qt.QPushButton(m.upper())
+            b.setCheckable(True)
+            b.setChecked(m == self.mode)
+            b.clicked.connect(lambda _, mm=m: self._set_mode(mm))
+            self.mode_group.addButton(b)
+            modes.addWidget(b)
+        modes.addStretch(1)
+        self._layout.addLayout(modes)
+
         self._update_label()
 
         # ---- Connections --------------------------------------------------
@@ -147,11 +174,10 @@ class HardwareMonitor(gr.top_block, Qt.QWidget):
         self.waterfall.set_frequency_range(self.vfo, SOURCE_RATE)
         self._update_label()
 
-    def _tune_up(self):
-        self._retune(self.vfo + STEP_HZ)
-
-    def _tune_down(self):
-        self._retune(self.vfo - STEP_HZ)
+    def _set_mode(self, mode):
+        self.mode = mode
+        self.sideband.set_taps(self._sideband_taps())   # live sideband swap
+        self._update_label()
 
     def _update_label(self):
         self.freq_label.setText(f"{self.vfo/1e3:,.1f} kHz   {self.mode.upper()}")
