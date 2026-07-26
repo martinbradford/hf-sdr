@@ -173,6 +173,14 @@ def main():
     signal.signal(signal.SIGINT, stop)
     tb.wait()
 
+    # Reached only if the flowgraph ended on its own (Ctrl-C sys.exits above).
+    if args.mode in ("diversity", "independent"):
+        print("\n[!] Stopped with no data — the RSPduo dual-tuner init likely failed.\n"
+              "    Reset the SDRplay API: open & close SDRConnect once, then retry.",
+              file=sys.stderr)
+    else:
+        print("\n[!] Source stopped unexpectedly (no samples).", file=sys.stderr)
+
 
 if __name__ == "__main__":
     main()
