@@ -79,6 +79,20 @@ auto-manages IF reduction and prevents ADC overload; raise RF gain reduction if
 strong signals still overload with AGC on. `ssb_demod.py` exposes `--rf-gr`,
 `--if-gr`, and `--agc/--no-agc` for this.
 
+## GitHub remote + git TLS (Norton again)
+
+Remote: https://github.com/martinbradford/hf-sdr (private). Auth is via Git
+Credential Manager (browser flow, no PAT needed).
+
+Norton's TLS interception can also break `git push` if git uses its bundled
+OpenSSL CA store. Fix: use the Windows-native TLS backend, which trusts the
+Windows cert store (incl. Norton's root):
+
+```
+git config http.sslBackend schannel
+```
+(Set on this repo; set `--global` if other repos hit the same SSL error.)
+
 ## Stage 1 result
 
 Headless smoke test (RSPduo single tuner, 40 m, 2 MS/s, 400k samples):
