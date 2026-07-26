@@ -21,6 +21,8 @@ Launch from a radioconda prompt:
     python hardware_verify.py --freq 7.2e6 --mode usb
 
 Notes:
+- The display shows a decimated (zoomed) copy of the stream; set the width
+  with --span-khz (default 250). The audio still uses the full-rate source.
 - The sideband filter (200-2700 Hz) rejects the DC/LO spike, so listening at
   centre is clean.
 """
@@ -56,7 +58,7 @@ FFT_SIZE = 2048
 
 
 class HardwareMonitor(gr.top_block, Qt.QWidget):
-    def __init__(self, freq, mode, agc, if_gr, rf_gr):
+    def __init__(self, freq, mode, agc, if_gr, rf_gr, span_hz):
         gr.top_block.__init__(self, "HF SDR — Stage 1 Monitor")
         Qt.QWidget.__init__(self)
         self.setWindowTitle("HF SDR — Stage 1 Monitor")
@@ -64,6 +66,11 @@ class HardwareMonitor(gr.top_block, Qt.QWidget):
 
         self.vfo = freq            # tuned freq = hardware centre = display centre
         self.mode = mode
+
+        # Display span: decimate a copy of the stream so the sinks show a
+        # narrower window (default ~250 kHz) instead of the full 2 MHz.
+        self.disp_decim = max(1, round(SOURCE_RATE / span_hz))
+        self.display_rate = SOURCE_RATE / self.disp_decim
 
         # ---- RSP Duo source (single tuner) --------------------------------
         self.src = sdrplay3.rspduo(
@@ -84,10 +91,15 @@ class HardwareMonitor(gr.top_block, Qt.QWidget):
         self.src.set_dc_offset_mode(True)
         self.src.set_iq_balance_mode(True)
 
-        # ---- Spectrum + waterfall (on the raw wideband stream) ------------
+        # ---- Display decimator (zoom) ------------------------------------
+        disp_taps = firdes.low_pass(
+            1.0, SOURCE_RATE, self.display_rate * 0.45, self.display_rate * 0.10)
+        self.disp_filter = gr_filter.fir_filter_ccf(self.disp_decim, disp_taps)
+
+        # ---- Spectrum + waterfall (on the decimated/zoomed stream) --------
         self.freq_sink = qtgui.freq_sink_c(
             FFT_SIZE, window.WIN_BLACKMAN_hARRIS,
-            self.vfo, SOURCE_RATE, "Spectrum", 1, None)
+            self.vfo, self.display_rate, "Spectrum", 1, None)
         self.freq_sink.set_update_time(0.10)
         self.freq_sink.set_y_axis(-140, -20)
         self.freq_sink.enable_grid(True)
@@ -96,7 +108,7 @@ class HardwareMonitor(gr.top_block, Qt.QWidget):
 
         self.waterfall = qtgui.waterfall_sink_c(
             FFT_SIZE, window.WIN_BLACKMAN_hARRIS,
-            self.vfo, SOURCE_RATE, "Waterfall", 1, None)
+            self.vfo, self.display_rate, "Waterfall", 1, None)
         self.waterfall.set_update_time(0.10)
         self.waterfall.set_intensity_range(-140, -20)
         self._add_widget(self.waterfall)
@@ -155,8 +167,11 @@ class HardwareMonitor(gr.top_block, Qt.QWidget):
         self._update_label()
 
         # ---- Connections --------------------------------------------------
-        self.connect(self.src, self.freq_sink)
-        self.connect(self.src, self.waterfall)
+        # Display: decimate a copy for the zoomed spectrum/waterfall.
+        self.connect(self.src, self.disp_filter)
+        self.connect(self.disp_filter, self.freq_sink)
+        self.connect(self.disp_filter, self.waterfall)
+        # Audio: full-rate source -> demod chain.
         self.connect(self.src, self.xlate, self.sideband, self.to_real,
                      self.agc, self.resamp, self.vol, self.audio_sink)
 
@@ -170,8 +185,8 @@ class HardwareMonitor(gr.top_block, Qt.QWidget):
     def _retune(self, hz):
         self.vfo = hz
         self.src.set_center_freq(self.vfo)
-        self.freq_sink.set_frequency_range(self.vfo, SOURCE_RATE)
-        self.waterfall.set_frequency_range(self.vfo, SOURCE_RATE)
+        self.freq_sink.set_frequency_range(self.vfo, self.display_rate)
+        self.waterfall.set_frequency_range(self.vfo, self.display_rate)
         self._update_label()
 
     def _set_mode(self, mode):
@@ -189,6 +204,8 @@ def main():
                    help="initial tuned frequency, Hz (default 7.1e6)")
     p.add_argument("--mode", choices=["lsb", "usb"], default="lsb",
                    help="sideband (default lsb, correct for 40 m)")
+    p.add_argument("--span-khz", type=float, default=250,
+                   help="display width in kHz (default 250; smaller = more zoom)")
     p.add_argument("--rf-gr", type=int, default=0,
                    help="RF gain reduction dB (raise to fix overload)")
     p.add_argument("--if-gr", type=int, default=40,
@@ -201,7 +218,8 @@ def main():
     args = p.parse_args()
 
     qapp = Qt.QApplication(sys.argv)
-    tb = HardwareMonitor(args.freq, args.mode, args.agc, args.if_gr, args.rf_gr)
+    tb = HardwareMonitor(args.freq, args.mode, args.agc, args.if_gr, args.rf_gr,
+                         args.span_khz * 1_000)
     tb.start()
     tb.show()
 
