@@ -106,18 +106,18 @@ Working **diversity** source config (see `server/python/poc/diversity_rx.py`):
 - `set_sample_rate(2_000_000)` — dual-tuner runs the ADC at 2 MHz. In the GRC
   example this is the `sample_rate_non_single_tuner` field; the `sample_rate`
   (62.5e3) field is used **only** in Single Tuner mode — a red herring.
-- `set_center_freq(freq)` **single-form** (both tuners locked to same freq),
-  `set_bandwidth(1_536_000)` (dual-tuner is Low-IF, fixed BW).
-- **Gain: set both tuners** with the per-tuner form `set_gain(gr, name, tuner)`
-  for `tuner in (0, 1)` and `set_gain_mode(agc, tuner)`. Diversity has two
-  independent front ends; setting only one leaves the other to overload.
+- Use **single-form** setters for everything: `set_center_freq(freq)`,
+  `set_gain(gr, name)`, `set_gain_mode(agc)`, `set_bandwidth(1_536_000)`
+  (dual-tuner is Low-IF, fixed BW). Diversity **links** the two tuners, so the
+  single-form calls apply to **both** front ends.
 
 **Gotchas:**
-1. **Frequency** must use the **single-form** `set_center_freq(freq)` in
-   diversity mode — the per-tuner `set_center_freq(freq_A, freq_B)` form is for
-   *independent RX* mode and **segfaults** in diversity ("device is not in
-   independent RX mode"). **Gain**, however, IS per-tuner (safe, no crash) and
-   should be set on both tuners — see above.
+1. In diversity mode, **single-form setters only** — for freq AND gain. The
+   per-tuner forms are *independent-RX* operations and fail here with "device is
+   not in independent RX mode": `set_center_freq(freq_A, freq_B)` **segfaults**;
+   `set_gain(gr, name, tuner)` / `set_gain_mode(agc, tuner)` abort the run. (An
+   earlier "no segfault" test was misleading — init had failed, so those calls
+   never hit a live device.)
 2. gr-sdrplay3 dual-tuner **init can fail** (`sdrplay_api_Init() Error:
    sdrplay_api_Fail`) on Windows + API 3.15 (gr-sdrplay3 issues #48, #54).
    Fix: launch and close **SDRConnect** once to reset the API state, then run.
