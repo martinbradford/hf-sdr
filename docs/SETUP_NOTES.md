@@ -66,6 +66,19 @@ This is set persistently in `.condarc`. The same PEM can be exported to
 `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` for pip if needed. Re-export if Norton
 rotates its root CA.
 
+## Gotcha: gr-sdrplay3 gain is gain *reduction*, and negative values overload
+
+`set_gain(value, "IF"|"RF")` takes **gain reduction in dB** (higher = less gain),
+not gain: IF is `[20-59]` (default 40), RF is `[0..dBMax]` (default 0). Passing
+negative values (e.g. `-40`) is out of range and clamps to the *minimum*
+reduction = *maximum* gain, which overloads the ADC on strong signals
+(`rspduo :warning: overload corrected`).
+
+For SSB listening, enabling IF AGC (`set_gain_mode(True)` + `set_agc_setpoint(-30)`)
+auto-manages IF reduction and prevents ADC overload; raise RF gain reduction if
+strong signals still overload with AGC on. `ssb_demod.py` exposes `--rf-gr`,
+`--if-gr`, and `--agc/--no-agc` for this.
+
 ## Stage 1 result
 
 Headless smoke test (RSPduo single tuner, 40 m, 2 MS/s, 400k samples):

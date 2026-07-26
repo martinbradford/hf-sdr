@@ -65,9 +65,12 @@ class HardwareVerify(gr.top_block, Qt.QWidget):
         self.src.set_sample_rate(SAMPLE_RATE)
         self.src.set_center_freq(CENTER_FREQ)
         self.src.set_bandwidth(BANDWIDTH)
+        # Gain values are gain REDUCTION in dB (higher = less gain):
+        # IF [20-59], RF [0..]. Negative values are out of range and clamp to
+        # minimum reduction (max gain) -> front-end overload on strong signals.
         self.src.set_gain_mode(False)        # AGC off for a predictable picture
-        self.src.set_gain(-40, "IF")         # IF gain reduction (dB)
-        self.src.set_gain(-20, "RF")         # RF gain reduction (dB)
+        self.src.set_gain(40, "IF")          # IF gain reduction (dB), 40 = default
+        self.src.set_gain(0, "RF")           # RF gain reduction (dB), raise if overloading
         self.src.set_dc_offset_mode(True)
         self.src.set_iq_balance_mode(True)
         self.src.set_rf_notch_filter(False)

@@ -37,7 +37,7 @@ AUDIO_RATE = 48_000
 
 
 class SsbReceiver(gr.top_block):
-    def __init__(self, center, freq, mode, volume):
+    def __init__(self, center, freq, mode, volume, agc, if_gr, rf_gr):
         gr.top_block.__init__(self, "HF SDR — Stage 2 SSB Demod")
 
         offset = freq - center  # freq-xlating filter brings this to baseband
@@ -50,9 +50,16 @@ class SsbReceiver(gr.top_block):
         self.src.set_sample_rate(SOURCE_RATE)
         self.src.set_center_freq(center)
         self.src.set_bandwidth(1_536_000)
-        self.src.set_gain_mode(False)
-        self.src.set_gain(-40, "IF")
-        self.src.set_gain(-20, "RF")
+        # Gain values are gain REDUCTION in dB (higher = less gain):
+        #   IF  [20-59], RF [0..] (max depends on band/antenna).
+        # IF AGC (gain mode) auto-manages IF reduction to avoid ADC overload;
+        # raise --rf-gr if strong signals still overload with AGC on.
+        self.src.set_gain_mode(agc)
+        if agc:
+            self.src.set_agc_setpoint(-30)
+        else:
+            self.src.set_gain(if_gr, "IF")
+        self.src.set_gain(rf_gr, "RF")
         self.src.set_dc_offset_mode(True)
         self.src.set_iq_balance_mode(True)
 
@@ -93,14 +100,26 @@ def main():
     p.add_argument("--mode", choices=["lsb", "usb"], default="lsb",
                    help="sideband (default lsb, correct for 40 m)")
     p.add_argument("--volume", type=float, default=0.5, help="output volume")
+    p.add_argument("--rf-gr", type=int, default=0,
+                   help="RF gain reduction dB (raise to fix overload, e.g. 20-40)")
+    p.add_argument("--if-gr", type=int, default=40,
+                   help="IF gain reduction dB [20-59], used only with --no-agc")
+    agc_grp = p.add_mutually_exclusive_group()
+    agc_grp.add_argument("--agc", dest="agc", action="store_true", default=True,
+                         help="enable IF AGC (default)")
+    agc_grp.add_argument("--no-agc", dest="agc", action="store_false",
+                         help="disable IF AGC and use --if-gr")
     args = p.parse_args()
 
     if abs(args.freq - args.center) > SOURCE_RATE / 2:
         sys.exit(f"--freq must be within +/- {SOURCE_RATE/2e6:.1f} MHz of --center")
 
-    tb = SsbReceiver(args.center, args.freq, args.mode, args.volume)
+    tb = SsbReceiver(args.center, args.freq, args.mode, args.volume,
+                     args.agc, args.if_gr, args.rf_gr)
+    gain_desc = "AGC" if args.agc else f"IF-GR {args.if_gr}dB"
     print(f"Tuned {args.freq/1e6:.4f} MHz ({args.mode.upper()}), "
-          f"center {args.center/1e6:.3f} MHz. Ctrl-C to stop.")
+          f"center {args.center/1e6:.3f} MHz, {gain_desc}, RF-GR {args.rf_gr}dB. "
+          f"Ctrl-C to stop.")
     tb.start()
 
     def stop(*_):
