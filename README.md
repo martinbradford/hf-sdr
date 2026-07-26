@@ -46,6 +46,11 @@ hf-sdr/
 - [~] Stage 3 — diversity: dual-tuner source + MRC combiner working; coherence
   confirmed (`server/python/poc/diversity_rx.py`). Real combining gain pending
   a two-antenna shack test.
+- [x] Multi-VRX: several independent receivers within one band on a single
+  tuner (`server/python/poc/multi_vrx.py`) — the reliable way to run multiple
+  in-band VFOs (no dual-tuner needed).
+- [x] Mode HAL: single / diversity / independent tuner modes behind one source
+  factory (`server/python/poc/mode_switch.py`).
 
 ## Development stages
 
