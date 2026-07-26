@@ -92,7 +92,7 @@ class DiversityCombiner(gr.sync_block):
 
 
 class DiversityReceiver(gr.top_block):
-    def __init__(self, freq, mode, agc, if_gr, rf_gr, audio_on):
+    def __init__(self, freq, mode, agc, if_gr, rf_gr, audio_on, bw):
         gr.top_block.__init__(self, "HF SDR — Stage 3 Diversity")
 
         # ---- Dual-tuner diversity source (2 coherent streams) ------------
@@ -121,12 +121,14 @@ class DiversityReceiver(gr.top_block):
         # ---- Demod chain on the combined stream --------------------------
         xlate_taps = firdes.low_pass(1.0, SOURCE_RATE, 15_000, 5_000)
         self.xlate = gr_filter.freq_xlating_fir_filter_ccf(DECIM, xlate_taps, 0.0, SOURCE_RATE)
-        low, high = (-2_700, -200) if mode == "lsb" else (200, 2_700)
+        lo_edge = 300                       # high-pass edge: cut carrier/rumble
+        low, high = (-bw, -lo_edge) if mode == "lsb" else (lo_edge, bw)
         self.sideband = gr_filter.fir_filter_ccc(
             1, firdes.complex_band_pass(1.0, INTER_RATE, low, high, 200))
         self.to_real = blocks.complex_to_real(1)
         self.agc = analog.agc2_ff(1e-1, 1e-2, 0.3, 1.0)
-        self.agc.set_max_gain(65_536)
+        # Cap AGC gain so quiet passages don't get amplified into loud hiss.
+        self.agc.set_max_gain(1_024)
         self.resamp = gr_filter.rational_resampler_fff(
             interpolation=AUDIO_RATE // 1_000, decimation=INTER_RATE // 1_000)
         self.vol = blocks.multiply_const_ff(0.5)
@@ -146,6 +148,8 @@ def main():
     p = argparse.ArgumentParser(description="Stage 3 diversity receiver PoC")
     p.add_argument("--freq", type=float, default=7.15e6, help="tuned frequency, Hz")
     p.add_argument("--mode", choices=["lsb", "usb"], default="lsb", help="sideband")
+    p.add_argument("--bw", type=int, default=2400,
+                   help="SSB audio bandwidth / high cutoff, Hz (lower to cut hiss)")
     p.add_argument("--rf-gr", type=int, default=0, help="RF gain reduction dB")
     p.add_argument("--if-gr", type=int, default=40, help="IF gain reduction dB [20-59]")
     p.add_argument("--no-audio", dest="audio", action="store_false", default=True,
@@ -155,7 +159,8 @@ def main():
     agc_grp.add_argument("--no-agc", dest="agc", action="store_false")
     args = p.parse_args()
 
-    tb = DiversityReceiver(args.freq, args.mode, args.agc, args.if_gr, args.rf_gr, args.audio)
+    tb = DiversityReceiver(args.freq, args.mode, args.agc, args.if_gr, args.rf_gr,
+                           args.audio, args.bw)
     print(f"Diversity RX @ {args.freq/1e6:.4f} MHz ({args.mode.upper()}). "
           f"Watch |g| and phase settle (coherent streams => stable). Ctrl-C to stop.")
     tb.start()
