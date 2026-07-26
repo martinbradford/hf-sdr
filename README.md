@@ -51,8 +51,10 @@ hf-sdr/
   in-band VFOs (no dual-tuner needed).
 - [x] Mode HAL: single / diversity / independent tuner modes behind one source
   factory (`server/python/poc/mode_switch.py`).
-- [~] Stage 4 — ZMQ contract drafted ([protocol/messages.md](protocol/messages.md),
-  v0.1); headless server + Avalonia client next.
+- [~] Stage 4 — ZMQ contract ([protocol/messages.md](protocol/messages.md), v0.1) +
+  headless server ([server/python/headless/server.py](server/python/headless/server.py)):
+  single-tuner capture, spectrum + multi-VRX audio over ZMQ, dynamic VRX
+  add/remove via lock()/unlock() — validated end-to-end. Avalonia client next.
 
 ## Development stages
 
