@@ -38,10 +38,11 @@ hf-sdr/
 
 ## Status
 
-- [x] radioconda / GNU Radio 3.10.12 installed
+- [x] radioconda / GNU Radio 3.10.12 installed (Python 3.12.9)
 - [x] SDRPlay API service running
-- [ ] `gr-sdrplay3` installed
-- [ ] Stage 1 — hardware proof (`server/python/poc/hardware_verify.py`)
+- [x] `gnuradio-sdrplay3` 3.11.0.8 installed (see [docs/SETUP_NOTES.md](docs/SETUP_NOTES.md))
+- [x] Stage 1 — hardware proof: IQ confirmed flowing from RSP Duo (headless smoke test)
+- [ ] Stage 1 — visual confirmation (`server/python/poc/hardware_verify.py`, Qt waterfall)
 
 ## Development stages
 
