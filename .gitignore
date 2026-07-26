@@ -39,9 +39,10 @@ obj/
 Thumbs.db
 desktop.ini
 
-# ---- Editor ----
+# ---- Editor / tooling ----
 .idea/
 *.swp
+.claude/settings.local.json
 
 # ---- SDR capture artifacts (large; keep out of git) ----
 *.iq
