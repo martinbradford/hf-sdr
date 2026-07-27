@@ -48,10 +48,10 @@ public partial class MainWindow : Window
 
             _audioBuf = new BufferedWaveProvider(new WaveFormat(48_000, 16, 1))
             {
-                BufferDuration = TimeSpan.FromSeconds(4),
+                BufferDuration = TimeSpan.FromSeconds(2),   // ceiling; catch-up keeps latency low
                 DiscardOnBufferOverflow = true
             };
-            _waveOut = new WaveOutEvent();
+            _waveOut = new WaveOutEvent { DesiredLatency = 150, NumberOfBuffers = 3 };
             _waveOut.Init(_audioBuf);
             _waveOut.Play();
 
@@ -88,6 +88,9 @@ public partial class MainWindow : Window
         var bytes = new byte[samples.Length * sizeof(short)];
         Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
         _audioBuf.AddSamples(bytes, 0, bytes.Length);   // thread-safe
+        // Bound latency: if the backlog grows past ~400 ms, resync to near-realtime.
+        if (_audioBuf.BufferedDuration > TimeSpan.FromMilliseconds(400))
+            _audioBuf.ClearBuffer();
     }
 
     private async void OnTune(object? sender, RoutedEventArgs e)

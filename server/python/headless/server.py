@@ -44,8 +44,8 @@ DISPLAY_RATE = SOURCE_RATE // DISPLAY_DECIM  # 250 kHz span
 MAX_VRX = 8
 
 DEFAULT_FILTERS = {           # audio passband edges (Hz) per mode
-    "lsb": (-2400, -300),
-    "usb": (300, 2400),
+    "lsb": (-3000, -200),     # wide enough for data (FT8 ~0-3000 Hz) and voice
+    "usb": (200, 3000),
     "cw":  (400, 900),
 }
 
