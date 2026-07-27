@@ -22,7 +22,8 @@
 
     <Border BorderBrush="#333" BorderThickness="1">
       <Grid>
-        <Image x:Name="Waterfall" Stretch="Fill" PointerPressed="OnWaterfallClick"/>
+        <Image x:Name="Waterfall" Stretch="Fill"
+               PointerPressed="OnWaterfallClick" PointerWheelChanged="OnWaterfallWheel"/>
         <Canvas x:Name="Overlay" IsHitTestVisible="False">
           <Rectangle x:Name="Marker" Width="2" Fill="#FFEB3B" IsVisible="False"/>
         </Canvas>

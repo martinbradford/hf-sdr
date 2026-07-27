@@ -151,6 +151,43 @@ public partial class MainWindow : Window
         finally { _busy = false; }
     }
 
+    private bool _pumping;
+
+    /// <summary>Mouse-wheel fine tuning: 50 Hz/notch, Ctrl = 10 Hz, Shift = 500 Hz.</summary>
+    private void OnWaterfallWheel(object? sender, PointerWheelEventArgs e)
+    {
+        if (!_connected || _vrxId is null) return;
+        long step = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 500
+                  : e.KeyModifiers.HasFlag(KeyModifiers.Control) ? 10
+                  : 50;
+        long delta = e.Delta.Y >= 0 ? step : -step;
+        long lo = _dispCenter - 950_000, hi = _dispCenter + 950_000;   // capture window
+        _vrxFreq = Math.Clamp(_vrxFreq + delta, lo, hi);
+        UpdateMarker();
+        StatusText.Text = $"VRX @ {_vrxFreq / 1e6:F4} MHz ({_vrxMode.ToUpper()})";
+        PumpVrx();
+        e.Handled = true;
+    }
+
+    /// <summary>Coalesced sender: keeps the server VRX caught up to _vrxFreq, dropping no notches.</summary>
+    private async void PumpVrx()
+    {
+        if (_pumping) return;
+        _pumping = true;
+        try
+        {
+            long sent = long.MinValue;
+            while (_connected && _vrxId is int id && _vrxFreq != sent)
+            {
+                long target = _vrxFreq;
+                await Task.Run(() => _client.Send("update_vrx", new { vrx_id = id, freq_hz = target }));
+                sent = target;
+            }
+        }
+        catch (Exception ex) { StatusText.Text = "tune failed: " + ex.Message; }
+        finally { _pumping = false; }
+    }
+
     /// <summary>Position the tuned-frequency marker line over the waterfall.</summary>
     private void UpdateMarker()
     {
