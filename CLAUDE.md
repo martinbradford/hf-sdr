@@ -50,10 +50,11 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
    - Server: `server/python/headless/server.py` — single-tuner capture,
      spectrum + multi-VRX audio over ZMQ, dynamic VRX via lock()/unlock().
      Validated end-to-end. Reference client: `example_client.py`.
-   - **NEXT: the Avalonia C# client** (`client/`, not started) — NetMQ to the
-     three sockets, render waterfall from float32 frames, play int16 audio,
-     drive tuning/VRX via control. (C# build/run is on the VS side, not runnable
-     from Claude Code here.)
+   - Client: `client/` (Avalonia **12** / **.NET 10**, `HfSdr.App`) —
+     architecture proof: NetMQ to the three sockets, waterfall from float32
+     frames, int16 audio via NAudio, tuning/VRX via control. Builds clean
+     (`dotnet build client/HfSdr.App` works from here — .NET SDK is installed;
+     only the GUI *run* needs a desktop/VS). **NEXT: flesh out the client UI.**
 
 Other reliable PoCs: `multi_vrx.py` (multiple in-band VRXs, single tuner),
 `mode_switch.py` (HAL: single/diversity/independent source factory).

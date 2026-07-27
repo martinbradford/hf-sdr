@@ -1,0 +1,23 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="HfSdr.App.MainWindow"
+        Width="920" Height="620"
+        Title="HF SDR — Client (architecture proof)">
+  <DockPanel Margin="10">
+
+    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8" Margin="0,0,0,10">
+      <Button x:Name="ConnectBtn" Content="Connect" Click="OnConnect"/>
+      <TextBlock Text="Freq (MHz):" VerticalAlignment="Center"/>
+      <TextBox x:Name="FreqBox" Width="110" Text="7.150"/>
+      <Button x:Name="TuneBtn" Content="Tune" Click="OnTune"/>
+      <Button x:Name="AddVrxBtn" Content="Add VRX + Listen" Click="OnAddVrx"/>
+    </StackPanel>
+
+    <TextBlock x:Name="StatusText" DockPanel.Dock="Bottom" Margin="0,8,0,0"
+               Text="Disconnected — start the server, then Connect." Opacity="0.8"/>
+
+    <Border BorderBrush="#333" BorderThickness="1">
+      <Image x:Name="Waterfall" Stretch="Fill"/>
+    </Border>
+  </DockPanel>
+</Window>

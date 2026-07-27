@@ -54,7 +54,10 @@ hf-sdr/
 - [~] Stage 4 — ZMQ contract ([protocol/messages.md](protocol/messages.md), v0.1) +
   headless server ([server/python/headless/server.py](server/python/headless/server.py)):
   single-tuner capture, spectrum + multi-VRX audio over ZMQ, dynamic VRX
-  add/remove via lock()/unlock() — validated end-to-end. Avalonia client next.
+  add/remove via lock()/unlock() — validated end-to-end.
+- [~] Stage 4 — Avalonia client architecture proof (`client/`): control +
+  waterfall + audio over the three ZMQ sockets. Builds clean; run against the
+  server to prove the boundary end-to-end.
 
 ## Development stages
 
