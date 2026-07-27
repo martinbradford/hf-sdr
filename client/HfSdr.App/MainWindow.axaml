@@ -10,14 +10,23 @@
       <TextBlock Text="Freq (MHz):" VerticalAlignment="Center"/>
       <TextBox x:Name="FreqBox" Width="110" Text="7.150"/>
       <Button x:Name="TuneBtn" Content="Tune" Click="OnTune"/>
-      <Button x:Name="AddVrxBtn" Content="Add VRX + Listen" Click="OnAddVrx"/>
+      <ComboBox x:Name="ModeBox" Width="90" SelectedIndex="0">
+        <ComboBoxItem>lsb</ComboBoxItem>
+        <ComboBoxItem>usb</ComboBoxItem>
+      </ComboBox>
+      <TextBlock Text="← click the waterfall to tune" VerticalAlignment="Center" Opacity="0.7"/>
     </StackPanel>
 
     <TextBlock x:Name="StatusText" DockPanel.Dock="Bottom" Margin="0,8,0,0"
                Text="Disconnected — start the server, then Connect." Opacity="0.8"/>
 
     <Border BorderBrush="#333" BorderThickness="1">
-      <Image x:Name="Waterfall" Stretch="Fill"/>
+      <Grid>
+        <Image x:Name="Waterfall" Stretch="Fill" PointerPressed="OnWaterfallClick"/>
+        <Canvas x:Name="Overlay" IsHitTestVisible="False">
+          <Rectangle x:Name="Marker" Width="2" Fill="#FFEB3B" IsVisible="False"/>
+        </Canvas>
+      </Grid>
     </Border>
   </DockPanel>
 </Window>
