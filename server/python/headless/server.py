@@ -461,14 +461,20 @@ def main():
     stop_evt = threading.Event()
     ctrl = threading.Thread(target=control_loop,
                             args=(ctx, args.control_port, srv, stop_evt), daemon=True)
+    signal.signal(signal.SIGINT, lambda *_: stop_evt.set())
     srv.start()
     ctrl.start()
     print(f"hf-sdr-server: control :{args.control_port}  stream :{args.stream_port}  "
           f"audio :{args.audio_port}  centre {args.center/1e6:.3f} MHz", flush=True)
 
-    # Block until shutdown (NOT srv.wait() — the flowgraph stops/starts on mode switch).
-    signal.signal(signal.SIGINT, lambda *_: stop_evt.set())
-    stop_evt.wait()
+    # Block until shutdown. NOT srv.wait() (the flowgraph stops/starts on mode
+    # switch) and NOT a bare Event.wait() (on Windows that parks in a C call and
+    # swallows Ctrl-C). A short timed loop lets SIGINT be delivered.
+    try:
+        while not stop_evt.wait(0.25):
+            pass
+    except KeyboardInterrupt:
+        pass
     srv.stop(); srv.wait()
 
 
