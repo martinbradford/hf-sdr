@@ -2,19 +2,24 @@
 """
 HF SDR headless server (Stage 4) — implements protocol/messages.md v0.1.
 
-Single-tuner capture (the reliable path) with:
+Single-tuner and diversity capture with:
   - a spectrum publisher (stream socket),
   - dynamically add/removable VRX demod chains (audio socket), via lock()/unlock(),
-  - a JSON REQ/REP control server.
+  - a JSON REQ/REP control server,
+  - LIVE tuner-mode switching (single <-> diversity) over the control channel:
+    the flowgraph is stopped, rebuilt in the new mode, verified, and restarted
+    in-process (no server restart, sockets stay bound). Dual-tuner init is
+    unreliable (docs/SETUP_NOTES.md), so the switch verifies samples flow and
+    retries; on persistent failure it reverts to single and returns device_error.
 
-Diversity / independent tuner modes are defined in the contract but not yet
-implemented here (dual-tuner init is unreliable — see docs/SETUP_NOTES.md);
-those commands return `unsupported` for now.
+Independent (dual-tuner, two bands) is not yet implemented here — it needs the
+two-capture-window VRX model; those commands return `unsupported` for now.
 
     python server.py --center 7.15e6
 """
 
 import argparse
+import gc
 import json
 import queue
 import signal
@@ -42,12 +47,21 @@ AUDIO_RATE = 48_000
 DISPLAY_DECIM = 8
 DISPLAY_RATE = SOURCE_RATE // DISPLAY_DECIM  # 250 kHz span
 MAX_VRX = 8
+INIT_VERIFY_S = 1.5                          # wait to confirm samples flow
+INIT_RETRIES = 3                             # dual-tuner init attempts
 
 DEFAULT_FILTERS = {           # audio passband edges (Hz) per mode
     "lsb": (-3000, -200),     # wide enough for data (FT8 ~0-3000 Hz) and voice
     "usb": (200, 3000),
     "cw":  (400, 900),
 }
+TUNER_MODES = ("single", "diversity")
+
+
+class ProtoError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code, self.message = code, message
 
 
 # --------------------------------------------------------------------------
@@ -78,8 +92,28 @@ class Publisher:
 
 
 # --------------------------------------------------------------------------
-# Custom sinks
+# Custom blocks
 # --------------------------------------------------------------------------
+class DiversityCombiner(gr.sync_block):
+    """Phase/amplitude-aligned MRC combiner for two coherent branches.
+    g = h1/h0 = <x1 conj(x0)>/<|x0|^2> (leaky); y = x0 + conj(g)*x1."""
+    def __init__(self, alpha=5e-3):
+        gr.sync_block.__init__(self, "diversity_combiner",
+                               [np.complex64, np.complex64], [np.complex64])
+        self.alpha = alpha
+        self.g_num = 0 + 0j
+        self.g_den = 1e-12
+        self.g = 0 + 0j
+
+    def work(self, input_items, output_items):
+        x0, x1, a = input_items[0], input_items[1], self.alpha
+        self.g_num = (1 - a) * self.g_num + a * np.mean(x1 * np.conj(x0))
+        self.g_den = (1 - a) * self.g_den + a * np.mean((x0 * np.conj(x0)).real)
+        self.g = self.g_num / self.g_den
+        output_items[0][:] = x0 + np.conj(self.g) * x1
+        return len(output_items[0])
+
+
 class SpectrumSink(gr.sync_block):
     """Vector float32[fft_size] -> stream socket, time-throttled to rate_hz."""
     def __init__(self, pub, topic, fft_size, header_fn, enabled_fn, rate_hz=15.0):
@@ -88,12 +122,14 @@ class SpectrumSink(gr.sync_block):
         self._period = 1.0 / rate_hz
         self._last = 0.0
         self._seq = 0
+        self.work_count = 0          # every work() call — used to verify init
 
     def set_rate(self, rate_hz):
         self._period = 1.0 / max(0.1, rate_hz)
 
     def work(self, input_items, output_items):
         inp = input_items[0]
+        self.work_count += 1
         now = time.monotonic()
         if self._en() and now - self._last >= self._period:
             self._last = now
@@ -130,7 +166,7 @@ class SdrServer(gr.top_block):
     def __init__(self, pub, center, fft_size=2048):
         gr.top_block.__init__(self, "hf-sdr-headless")
         self.pub = pub
-        self.center = center
+        self.center = int(center)
         self.fft_size = fft_size
         self.gain = {"agc": True, "if_gr_db": 40, "rf_gr_db": 0, "agc_setpoint_dbfs": -30}
         self._vrx = {}
@@ -138,31 +174,68 @@ class SdrServer(gr.top_block):
         self._audio_on = True
         self._spectrum_on = True
         self._lp_taps = firdes.low_pass(1.0, SOURCE_RATE, 15_000, 5_000)
+        self._mode = "single"
+        self.src = None
+        self.combiner = None
+        self._demod_src = None            # block VRXs + spectrum tap off (mode-dependent)
+        self.spec_sink = None
+        self._build(self._mode)
 
-        # ---- source (single tuner) ----
-        self.src = sdrplay3.rspduo(
-            "", rspduo_mode="Single Tuner", antenna="Tuner 1 50 ohm",
-            stream_args=sdrplay3.stream_args(output_type="fc32", channels_size=1))
-        self.src.set_sample_rate(SOURCE_RATE)
-        self.src.set_center_freq(center)
-        self.src.set_bandwidth(1_536_000)
-        self._apply_gain()
-        self.src.set_dc_offset_mode(True)
-        self.src.set_iq_balance_mode(True)
+    # ---- flowgraph construction --------------------------------------
+    def _build_source(self, mode):
+        if mode == "single":
+            src = sdrplay3.rspduo(
+                "", rspduo_mode="Single Tuner", antenna="Tuner 1 50 ohm",
+                stream_args=sdrplay3.stream_args(output_type="fc32", channels_size=1))
+        elif mode == "diversity":
+            src = sdrplay3.rspduo(
+                "", rspduo_mode="Dual Tuner (diversity reception)", antenna="Both Tuners",
+                stream_args=sdrplay3.stream_args(output_type="fc32", channels_size=2))
+        else:
+            raise ProtoError("unsupported", f"tuner mode {mode} not implemented")
+        src.set_sample_rate(SOURCE_RATE)
+        src.set_center_freq(self.center)       # single-form (both tuners locked in diversity)
+        src.set_bandwidth(1_536_000)
+        self.src = src
+        self._apply_gain()                     # single-form gain (both tuners in diversity)
+        src.set_dc_offset_mode(True)
+        src.set_iq_balance_mode(True)
+        return src
 
-        # ---- spectrum chain ----
+    def _build(self, mode):
+        """Build source + combiner (if diversity) + spectrum chain. Leaves the
+        graph stopped and VRX-less; caller re-adds VRXs and starts."""
+        src = self._build_source(mode)
+        if mode == "diversity":
+            self.combiner = DiversityCombiner()
+            self.connect((src, 0), (self.combiner, 0))
+            self.connect((src, 1), (self.combiner, 1))
+            self._demod_src = self.combiner
+        else:
+            self.combiner = None
+            self._demod_src = src
+
         disp_taps = firdes.low_pass(1.0, SOURCE_RATE, DISPLAY_RATE * 0.45, DISPLAY_RATE * 0.10)
         disp = gr_filter.fir_filter_ccf(DISPLAY_DECIM, disp_taps)
-        s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, fft_size)
-        fftb = fft.fft_vcc(fft_size, True, window.blackmanharris(fft_size), True)
-        mag = blocks.complex_to_mag_squared(fft_size)
-        # 10*log10(mag^2) with an FFT-gain normalisation -> approx dBFS
-        log = blocks.nlog10_ff(10.0, fft_size, -20.0 * np.log10(fft_size))
-        self.spec_sink = SpectrumSink(pub, "spectrum/0", fft_size,
+        s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, self.fft_size)
+        fftb = fft.fft_vcc(self.fft_size, True, window.blackmanharris(self.fft_size), True)
+        mag = blocks.complex_to_mag_squared(self.fft_size)
+        log = blocks.nlog10_ff(10.0, self.fft_size, -20.0 * np.log10(self.fft_size))
+        self.spec_sink = SpectrumSink(self.pub, "spectrum/0", self.fft_size,
                                       self._spectrum_header, lambda: self._spectrum_on)
-        self.connect(self.src, disp, s2v, fftb, mag, log, self.spec_sink)
+        self.connect(self._demod_src, disp, s2v, fftb, mag, log, self.spec_sink)
+        self._mode = mode
 
-    # ---- helpers ----
+    def _teardown(self):
+        self.stop(); self.wait()
+        self.disconnect_all()
+        self._vrx.clear()
+        self.combiner = None
+        self.src = None
+        self._demod_src = None
+        gc.collect()                # force gr-sdrplay3 source destructor -> device deinit
+
+    # ---- gain / headers ----------------------------------------------
     def _apply_gain(self):
         g = self.gain
         self.src.set_gain_mode(g["agc"])
@@ -173,28 +246,12 @@ class SdrServer(gr.top_block):
         self.src.set_gain(g["rf_gr_db"], "RF")
 
     def _spectrum_header(self):
-        return {"source": "0", "center_hz": int(self.center), "span_hz": int(DISPLAY_RATE),
+        return {"source": "combined" if self._mode == "diversity" else "0",
+                "center_hz": int(self.center), "span_hz": int(DISPLAY_RATE),
                 "fft_size": self.fft_size, "ref_dbfs": 0}
 
-    # ---- control operations (called from control thread) ----
-    def set_center_freq(self, hz):
-        self.center = int(hz)
-        self.src.set_center_freq(self.center)
-        for r in self._vrx.values():
-            r["xlate"].set_center_freq(r["freq"] - self.center)
-        return {"center_hz": self.center}
-
-    def set_gain(self, **kw):
-        self.gain.update({k: kw[k] for k in self.gain if k in kw})
-        self._apply_gain()
-        return dict(self.gain)
-
-    def set_spectrum(self, rate_hz=None, **_):
-        if rate_hz:
-            self.spec_sink.set_rate(rate_hz)
-        return {"fft_size": self.fft_size, "rate_hz": rate_hz}
-
-    def add_vrx(self, freq_hz, mode="lsb", filter=None, volume=0.5, **_):
+    # ---- VRX ----------------------------------------------------------
+    def _make_vrx(self, freq_hz, mode="lsb", filter=None, volume=0.5, **_):
         if len(self._vrx) >= MAX_VRX:
             raise ProtoError("busy", "max VRX reached")
         if mode not in DEFAULT_FILTERS:
@@ -213,15 +270,22 @@ class SdrServer(gr.top_block):
         vol = blocks.multiply_const_ff(volume)
         vid = self._next_id; self._next_id += 1
         asink = AudioSink(self.pub, vid, AUDIO_RATE, lambda: self._audio_on)
-        chain = [xlate, sb, c2r, ag, rs, vol, asink]
+        return {"vrx_id": vid, "freq": int(freq_hz), "mode": mode,
+                "filter": {"low_hz": low, "high_hz": high}, "volume": volume,
+                "chain": [xlate, sb, c2r, ag, rs, vol, asink], "xlate": xlate, "vol": vol}
 
+    def _connect_vrx(self, rec):
+        self.connect(self._demod_src, rec["chain"][0])
+        for a, b in zip(rec["chain"], rec["chain"][1:]):
+            self.connect(a, b)
+
+    def add_vrx(self, **params):
+        rec = self._make_vrx(**params)
         self.lock()
-        self.connect(self.src, xlate, sb, c2r, ag, rs, vol, asink)
+        self._connect_vrx(rec)
         self.unlock()
-        self._vrx[vid] = {"vrx_id": vid, "freq": int(freq_hz), "mode": mode,
-                          "filter": {"low_hz": low, "high_hz": high}, "volume": volume,
-                          "chain": chain, "xlate": xlate, "vol": vol}
-        return self._vrx_public(vid)
+        self._vrx[rec["vrx_id"]] = rec
+        return self._vrx_public(rec["vrx_id"])
 
     def update_vrx(self, vrx_id, **kw):
         r = self._vrx.get(vrx_id)
@@ -238,7 +302,7 @@ class SdrServer(gr.top_block):
         if not r:
             raise ProtoError("bad_request", f"no vrx {vrx_id}")
         self.lock()
-        self.disconnect(self.src, r["chain"][0])
+        self.disconnect(self._demod_src, r["chain"][0])
         for a, b in zip(r["chain"], r["chain"][1:]):
             self.disconnect(a, b)
         self.unlock()
@@ -249,10 +313,62 @@ class SdrServer(gr.top_block):
         return {"vrx_id": vid, "freq_hz": r["freq"], "mode": r["mode"],
                 "filter": r["filter"], "volume": r["volume"]}
 
+    # ---- control operations ------------------------------------------
+    def set_center_freq(self, hz):
+        self.center = int(hz)
+        self.src.set_center_freq(self.center)
+        for r in self._vrx.values():
+            r["xlate"].set_center_freq(r["freq"] - self.center)
+        return {"center_hz": self.center}
+
+    def set_gain(self, **kw):
+        self.gain.update({k: kw[k] for k in self.gain if k in kw})
+        self._apply_gain()
+        return dict(self.gain)
+
+    def set_spectrum(self, rate_hz=None, **_):
+        if rate_hz:
+            self.spec_sink.set_rate(rate_hz)
+        return {"fft_size": self.fft_size, "rate_hz": rate_hz}
+
+    def set_tuner_mode(self, mode):
+        if mode == self._mode:
+            return self.status()
+        if mode not in TUNER_MODES:
+            raise ProtoError("unsupported", f"tuner mode {mode} not implemented")
+        saved = [{"freq_hz": r["freq"], "mode": r["mode"], "filter": r["filter"],
+                  "volume": r["volume"]} for r in self._vrx.values()]
+        if self._reconfigure(mode, saved):
+            return self.status()
+        # persistent failure (dual-tuner init) -> fall back to single
+        self._reconfigure("single", saved)
+        raise ProtoError("device_error",
+                         f"{mode} init failed (dual-tuner unreliable); reverted to single")
+
+    def _reconfigure(self, mode, saved_vrx):
+        """Rebuild the graph in `mode`, re-add VRXs, start, and verify samples
+        flow. Retries dual-tuner init. Returns True on success."""
+        self._teardown()
+        attempts = INIT_RETRIES if mode == "diversity" else 1
+        for _ in range(attempts):
+            self._build(mode)
+            for v in saved_vrx:
+                rec = self._make_vrx(**v)
+                self._connect_vrx(rec)
+                self._vrx[rec["vrx_id"]] = rec
+            before = self.spec_sink.work_count
+            self.start()
+            time.sleep(INIT_VERIFY_S)
+            if self.spec_sink.work_count > before:
+                return True                  # samples flowing -> init OK
+            self._teardown()                 # init failed -> reset and retry
+            time.sleep(0.5)
+        return False
+
     def status(self):
-        return {
+        st = {
             "protocol_version": PROTOCOL_VERSION,
-            "tuner_mode": "single",
+            "tuner_mode": self._mode,
             "device": {"name": "RSPduo"},
             "capture": {"center_hz": self.center, "sample_rate_hz": SOURCE_RATE,
                         "bandwidth_hz": 1_536_000},
@@ -260,12 +376,11 @@ class SdrServer(gr.top_block):
             "vrx": [self._vrx_public(v) for v in self._vrx],
             "streaming": {"audio": self._audio_on, "spectrum": self._spectrum_on},
         }
-
-
-class ProtoError(Exception):
-    def __init__(self, code, message):
-        super().__init__(message)
-        self.code, self.message = code, message
+        if self._mode == "diversity" and self.combiner is not None:
+            g = self.combiner.g
+            st["combiner"] = {"type": "mrc", "auto": True, "amp": float(abs(g)),
+                              "phase_deg": float(np.degrees(np.angle(g)))}
+        return st
 
 
 # --------------------------------------------------------------------------
@@ -275,10 +390,10 @@ def control_loop(ctx, port, srv, stop_evt):
     sock = ctx.socket(zmq.REP)
     sock.bind(f"tcp://*:{port}")
     poller = zmq.Poller(); poller.register(sock, zmq.POLLIN)
-    caps = {"tuner_modes": ["single"], "demod_modes": list(DEFAULT_FILTERS),
+    caps = {"tuner_modes": list(TUNER_MODES), "demod_modes": list(DEFAULT_FILTERS),
             "max_vrx": MAX_VRX, "sample_rates_hz": [SOURCE_RATE],
             "audio_rate_hz": AUDIO_RATE, "audio_formats": ["int16"],
-            "features": ["multi_vrx"]}
+            "features": ["multi_vrx", "diversity"]}
 
     def handle(cmd, p):
         if cmd == "hello":
@@ -288,9 +403,7 @@ def control_loop(ctx, port, srv, stop_evt):
         if cmd == "get_capabilities":
             return caps
         if cmd == "set_tuner_mode":
-            if p.get("mode") != "single":
-                raise ProtoError("unsupported", "only single-tuner implemented")
-            return srv.status()
+            return srv.set_tuner_mode(p.get("mode", "single"))
         if cmd == "set_center_freq":
             return srv.set_center_freq(p["hz"])
         if cmd == "set_gain":
@@ -353,10 +466,10 @@ def main():
     print(f"hf-sdr-server: control :{args.control_port}  stream :{args.stream_port}  "
           f"audio :{args.audio_port}  centre {args.center/1e6:.3f} MHz", flush=True)
 
-    def stop(*_):
-        stop_evt.set(); srv.stop(); srv.wait(); sys.exit(0)
-    signal.signal(signal.SIGINT, stop)
-    srv.wait()
+    # Block until shutdown (NOT srv.wait() — the flowgraph stops/starts on mode switch).
+    signal.signal(signal.SIGINT, lambda *_: stop_evt.set())
+    stop_evt.wait()
+    srv.stop(); srv.wait()
 
 
 if __name__ == "__main__":
