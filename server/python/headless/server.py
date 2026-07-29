@@ -58,6 +58,10 @@ DEFAULT_FILTERS = {           # audio passband edges (Hz) per mode
 TUNER_MODES = ("single", "diversity")
 
 
+def _clamp(v, lo, hi):
+    return lo if v < lo else hi if v > hi else v
+
+
 class ProtoError(Exception):
     def __init__(self, code, message):
         super().__init__(message)
@@ -169,6 +173,7 @@ class SdrServer(gr.top_block):
         self.center = int(center)
         self.fft_size = fft_size
         self.gain = {"agc": True, "if_gr_db": 40, "rf_gr_db": 0, "agc_setpoint_dbfs": -30}
+        self._lna_state = 0                # resulting LNA state after the last RF apply
         self._vrx = {}
         self._next_id = 1
         self._audio_on = True
@@ -236,14 +241,35 @@ class SdrServer(gr.top_block):
         gc.collect()                # force gr-sdrplay3 source destructor -> device deinit
 
     # ---- gain / headers ----------------------------------------------
+    def _gr_range(self, name):
+        """Valid gain-*reduction* range (positive dB) for `name`.
+
+        gr-sdrplay3 reports/accepts a negative 'gain' (e.g. RF (-61,0),
+        IF (-59,-20)); the SDRPlay-native 'gain reduction' is its negation.
+        Returns (min_gr, max_gr) as positive dB, band-dependent.
+        """
+        lo, hi = self.src.get_gain_range(name)      # negative 'gain' convention
+        return -hi + 0.0, -lo + 0.0                 # +0.0 normalises -0.0 -> 0.0
+
     def _apply_gain(self):
+        """Apply gains. We store/report positive gain *reduction* (protocol
+        convention), but gr-sdrplay3 wants negative 'gain', so we negate at the
+        boundary. Passing the server's positive values straight through was the
+        bug (gotcha #5): the API rejected them as OutOfRange and gains stuck at
+        max -> overload. Values are clamped to the live valid range; RF snaps to
+        the nearest discrete LNA step. Read-backs record what actually took."""
         g = self.gain
         self.src.set_gain_mode(g["agc"])
         if g["agc"]:
             self.src.set_agc_setpoint(g["agc_setpoint_dbfs"])
         else:
-            self.src.set_gain(g["if_gr_db"], "IF")
-        self.src.set_gain(g["rf_gr_db"], "RF")
+            if_gr = _clamp(g["if_gr_db"], *self._gr_range("IF"))
+            self.src.set_gain(-float(if_gr), "IF")
+            g["if_gr_db"] = int(round(-self.src.get_gain("IF")))
+        rf_gr = _clamp(g["rf_gr_db"], *self._gr_range("RF"))
+        self.src.set_gain(-float(rf_gr), "RF")      # driver snaps to nearest LNA step
+        g["rf_gr_db"] = int(round(-self.src.get_gain("RF")))   # actual (snapped) value
+        self._lna_state = int(self.src.get_gain("LNAstate"))
 
     def _spectrum_header(self):
         return {"source": "combined" if self._mode == "diversity" else "0",
@@ -321,10 +347,16 @@ class SdrServer(gr.top_block):
             r["xlate"].set_center_freq(r["freq"] - self.center)
         return {"center_hz": self.center}
 
+    def _gain_public(self):
+        return {**self.gain, "lna_state": self._lna_state,
+                "rf_gr_db_range": list(self._gr_range("RF")),
+                "if_gr_db_range": list(self._gr_range("IF"))}
+
     def set_gain(self, **kw):
         self.gain.update({k: kw[k] for k in self.gain if k in kw})
+        self.gain["agc"] = bool(self.gain["agc"])   # keep the driver bool clean
         self._apply_gain()
-        return dict(self.gain)
+        return self._gain_public()
 
     def set_spectrum(self, rate_hz=None, **_):
         if rate_hz:
@@ -372,7 +404,7 @@ class SdrServer(gr.top_block):
             "device": {"name": "RSPduo"},
             "capture": {"center_hz": self.center, "sample_rate_hz": SOURCE_RATE,
                         "bandwidth_hz": 1_536_000},
-            "gain": dict(self.gain),
+            "gain": self._gain_public(),
             "vrx": [self._vrx_public(v) for v in self._vrx],
             "streaming": {"audio": self._audio_on, "spectrum": self._spectrum_on},
         }

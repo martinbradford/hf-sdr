@@ -30,10 +30,10 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
      `conda config --set ssl_verify C:\Users\MABY\radioconda\win-trusted-ca.pem`. Never use `ssl_verify: false`.
    - git: `git config http.sslBackend schannel` (uses Windows cert store). Already set on this repo.
    - When running installs/network via Claude Code's Bash/PowerShell tools, use `dangerouslyDisableSandbox: true` (the sandbox proxy adds its own untrusted TLS layer on top of Norton's).
-2. **gr-sdrplay3 gain is gain _reduction_ in dB** (higher = less gain): IF `[20-59]` (default 40), RF `[0..]` (default 0). Negative values clamp to min reduction = max gain → ADC overload. Enable IF AGC (`set_gain_mode(True)` + `set_agc_setpoint(-30)`) to avoid overload; raise RF reduction for strong signals.
+2. **gr-sdrplay3 gain: mind the SIGN.** SDRPlay speaks *gain reduction* (positive dB, higher = less gain: IF `[20-59]`, RF `[0-61]` on HF). But **gr-sdrplay3's `set_gain`/`get_gain`/`get_gain_range` use the _negative_ of that ("gain": IF `(-59,-20)`, RF `(-61,0)`)**. So to apply *N dB of reduction* you must call `set_gain(-N, "IF"/"RF")`. Passing a positive value is out of range → `sdrplay_api_OutOfRange`, silently rejected, gain stuck at max → ADC overload. The headless server stores/reports positive reduction (protocol convention) and negates at the driver boundary (`_apply_gain`), clamping to the live `get_gain_range`. Enable IF AGC (`set_gain_mode(True)` + `set_agc_setpoint(-30)`) to avoid overload; raise RF reduction for strong signals. RF maps to discrete LNA steps — see gotcha #5.
 3. **Dual-tuner init needs a clean in-process deinit — now largely SOLVED.** A fresh dual-tuner init fails (`sdrplay_api_Fail`/silent crash + wedges device) unless the previous source was properly *deinitialised* first. The headless server's `set_tuner_mode` does stop → `disconnect_all` → **`gc.collect()`** (forces the gr-sdrplay3 source destructor → device deinit) → rebuild → verify samples flow → retry 3× → fall back to single on failure. This makes **live single↔diversity switching work repeatably** (occasional fails degrade gracefully). The standalone PoC scripts (`diversity_rx.py`, `mode_switch.py`) do NOT do this, so they still need the old workaround: open & close **SDRConnect** once to reset the API; if wedged, `Restart-Service SDRplayAPIService` or a physical USB power-cycle. Not hardware — single-tuner is rock-solid; SDRConnect/SDRuno switch fine. In diversity use **single-form** freq setter (per-tuner/(A,B) freq **segfaults**). Details: [`docs/SETUP_NOTES.md`](docs/SETUP_NOTES.md).
 4. **For multiple receivers in one band, use single-tuner + multiple VRXs** (freq-xlating demod chains) — reliable, no dual-tuner needed. Dual-tuner independent RX is only for receivers on *different* bands.
-5. **RF gain reduction must be a VALID discrete LNA step** (OPEN BUG). IF is `[20-59]` (continuous). RF/LNA steps are discrete and band-limited — on HF, values like 40/90 raise `sdrplay_api_Update … OutOfRange` and the API **rejects the whole gain update silently** (RF stays put, so overload never clears). This is why diversity currently overloads (RF stuck at 0). TODO: query gr-sdrplay3 for valid RF steps and clamp/validate in the server (and client).
+5. **RF gain = discrete LNA steps — SOLVED (was the "diversity overloads" bug).** IF is continuous `[20-59]`. RF reduction is a set of discrete, band-limited **LNA states** — on HF, states 0–6 = `{0,6,12,18,37,42,61}` dB. The root cause of the overload was gotcha #2's sign flip (server sent *positive* `rf_gr_db` → OutOfRange → RF stuck at state 0 = max gain). Fixed: the server negates + clamps to `get_gain_range("RF")`, and gr-sdrplay3 **auto-snaps** the requested dB to the nearest valid LNA step. `set_gain`/`get_status` echo the actual applied `rf_gr_db`, the resulting `lna_state`, and `rf_gr_db_range`/`if_gr_db_range` for the current band. Verify with `ctl.py set_gain rf_gr_db=30` → replies `rf_gr_db:37, lna_state:4`. (The standalone PoCs still pass raw positive values — same latent bug, not yet fixed there.)
 
 ## Development stages / current state
 
@@ -59,10 +59,13 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
      into WSJT-X; switchable live; device list captured at startup). Proven
      end-to-end on real signals (decoded FT8).
      `dotnet build` works from here (SDK installed); GUI *run* needs a desktop.
-   - **NEXT:** fix RF gain validation (gotcha #5); add mode+gain controls to the
-     client; CAT/rig control (e.g. Hamlib rigctld) so WSJT-X logs the real freq;
-     characterise switch reliability (clean single↔diversity flips from a
-     power-cycle); two-antenna diversity-gain measurement (shack).
+     RF gain validation is fixed (gotcha #5): `set_gain` negates+clamps and
+     snaps RF to valid LNA steps; status reports `lna_state` + valid ranges.
+   - **NEXT:** add mode+gain controls to the client (status now exposes
+     `rf_gr_db_range`/`if_gr_db_range`/`lna_state` for the UI); CAT/rig control
+     (e.g. Hamlib rigctld) so WSJT-X logs the real freq; characterise switch
+     reliability (clean single↔diversity flips from a power-cycle); two-antenna
+     diversity-gain measurement (shack); apply the same gain-sign fix to the PoCs.
 
 Other reliable PoCs: `multi_vrx.py` (multiple in-band VRXs, single tuner),
 `mode_switch.py` (HAL: single/diversity/independent source factory).

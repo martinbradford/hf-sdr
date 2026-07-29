@@ -95,7 +95,7 @@ Every reply:
 | `set_center_freq` | `{ "hz": <int>, "tuner": <0\|1> }` | `tuner` required only in `independent` mode; ignored/locked otherwise. |
 | `set_sample_rate` | `{ "hz": <int> }` | Capture width. Dual-tuner modes are fixed at 2 000 000. |
 | `set_bandwidth` | `{ "hz": <int> }` | IF bandwidth. |
-| `set_gain` | `{ "agc": <bool>, "if_gr_db": <int>, "rf_gr_db": <int>, "agc_setpoint_dbfs": <int>, "tuner": <0\|1> }` | Gains are **gain reduction** in dB (higher = less gain). `if_gr_db` used only when `agc=false`. `tuner` only meaningful in `independent`. |
+| `set_gain` | `{ "agc": <bool>, "if_gr_db": <int>, "rf_gr_db": <int>, "agc_setpoint_dbfs": <int>, "tuner": <0\|1> }` | Gains are **gain reduction** in dB, given as **positive** values (higher = less gain). Both are clamped to the live valid range (see `*_range` in status). `rf_gr_db` snaps to the nearest discrete **LNA step** for the current band (on HF: `{0,6,12,18,37,42,61}` dB / states 0–6); the reply/status echo the actual applied value + resulting `lna_state`. `if_gr_db` used only when `agc=false`. `tuner` only meaningful in `independent`. |
 
 ### 4.4 VRX (virtual receivers)
 
@@ -139,7 +139,8 @@ Live correction estimate (|g|, phase) is reported via `telemetry` (§6.3).
   "tuner_mode": "diversity",
   "device": { "name": "RSPduo", "serial": "2305039434" },
   "capture": { "center_hz": 7150000, "sample_rate_hz": 2000000, "bandwidth_hz": 1536000 },
-  "gain": { "agc": true, "if_gr_db": 40, "rf_gr_db": 30, "agc_setpoint_dbfs": -30 },
+  "gain": { "agc": true, "if_gr_db": 40, "rf_gr_db": 37, "agc_setpoint_dbfs": -30,
+            "lna_state": 4, "rf_gr_db_range": [0, 61], "if_gr_db_range": [20, 59] },
   "combiner": { "type": "mrc", "auto": true, "amp": 1.31, "phase_deg": 148.4 },
   "vrx": [
     { "vrx_id": 1, "freq_hz": 7150000, "mode": "lsb",
