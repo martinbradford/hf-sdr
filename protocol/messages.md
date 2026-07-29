@@ -183,10 +183,15 @@ Live correction estimate (|g|, phase) is reported via `telemetry` (§6.3).
 - **header**
   ```json
   { "seq": 4021, "source": "combined", "center_hz": 7150000, "span_hz": 250000,
-    "fft_size": 2048, "ref_dbfs": 0, "t_utc_ms": 1753500000123 }
+    "fft_size": 2048, "ref_dbfs": 0, "peak_dbfs": -12.4, "overload": false,
+    "t_utc_ms": 1753500000123 }
   ```
 - **payload**: `fft_size` × `float32`, magnitude in **dBFS**, ordered low→high
   frequency (already `fftshift`-ed), spanning `center_hz ± span_hz/2`.
+- `peak_dbfs`: highest raw-stream sample peak across tuners (fc32 full scale =
+  ADC full scale = 0 dBFS), i.e. live ADC headroom. `overload`: true when
+  `peak_dbfs` reaches the server's overload threshold (~-1 dBFS) — surfaced
+  because gr-sdrplay3's own overload warning is log-only (no message port).
 
 ### 6.2 `event`
 Async server notifications; **no payload frame**, header only:

@@ -6,8 +6,10 @@ using NetMQ.Sockets;
 
 namespace HfSdr.App;
 
-/// <summary>One spectrum frame: magnitudes (dBFS) low→high across the span.</summary>
-public record SpectrumFrame(int FftSize, long CenterHz, long SpanHz, float[] Mags);
+/// <summary>One spectrum frame: magnitudes (dBFS) low→high across the span,
+/// plus the raw-stream peak level and ADC-overload flag from the server.</summary>
+public record SpectrumFrame(int FftSize, long CenterHz, long SpanHz, float[] Mags,
+                            double PeakDbfs, bool Overload);
 
 /// <summary>
 /// Client for the HF SDR headless server (protocol/messages.md v0.1).
@@ -81,11 +83,13 @@ public sealed class SdrClient : IDisposable
         int fftSize = h.GetProperty("fft_size").GetInt32();
         long center = h.GetProperty("center_hz").GetInt64();
         long span = h.GetProperty("span_hz").GetInt64();
+        double peak = h.TryGetProperty("peak_dbfs", out var pk) ? pk.GetDouble() : double.NaN;
+        bool overload = h.TryGetProperty("overload", out var ov) && ov.GetBoolean();
 
         var bytes = msg[2].ToByteArray();
         var mags = new float[bytes.Length / sizeof(float)];
         Buffer.BlockCopy(bytes, 0, mags, 0, mags.Length * sizeof(float));  // little-endian both ends
-        SpectrumReceived?.Invoke(new SpectrumFrame(fftSize, center, span, mags));
+        SpectrumReceived?.Invoke(new SpectrumFrame(fftSize, center, span, mags, peak, overload));
     }
 
     private void OnAudio(object? sender, NetMQSocketEventArgs e)

@@ -49,6 +49,8 @@ DISPLAY_RATE = SOURCE_RATE // DISPLAY_DECIM  # 250 kHz span
 MAX_VRX = 8
 INIT_VERIFY_S = 1.5                          # wait to confirm samples flow
 INIT_RETRIES = 3                             # dual-tuner init attempts
+PEAK_BLOCK = 4096                            # samples per raw-stream peak-hold block
+OVERLOAD_DBFS = -1.0                         # peak at/above this = ADC overload (fc32 full scale = 0 dBFS)
 
 DEFAULT_FILTERS = {           # audio passband edges (Hz) per mode
     "lsb": (-3000, -200),     # wide enough for data (FT8 ~0-3000 Hz) and voice
@@ -174,6 +176,7 @@ class SdrServer(gr.top_block):
         self.fft_size = fft_size
         self.gain = {"agc": True, "if_gr_db": 40, "rf_gr_db": 0, "agc_setpoint_dbfs": -30}
         self._lna_state = 0                # resulting LNA state after the last RF apply
+        self._peak_probes = []             # per-tuner raw-stream peak-hold probes
         self._vrx = {}
         self._next_id = 1
         self._audio_on = True
@@ -220,6 +223,18 @@ class SdrServer(gr.top_block):
             self.combiner = None
             self._demod_src = src
 
+        # Peak-hold tap on each raw tuner stream (pre-filter, where ADC clipping
+        # shows) -> a per-block max fed to a probe we read when building spectrum
+        # headers. fc32 full scale = ADC full scale, so this is real headroom.
+        self._peak_probes = []
+        for ch in range(2 if mode == "diversity" else 1):
+            pmag = blocks.complex_to_mag(1)
+            ps2v = blocks.stream_to_vector(gr.sizeof_float, PEAK_BLOCK)
+            pmax = blocks.max_ff(PEAK_BLOCK)
+            probe = blocks.probe_signal_f()
+            self.connect((src, ch), pmag, ps2v, pmax, probe)
+            self._peak_probes.append(probe)
+
         disp_taps = firdes.low_pass(1.0, SOURCE_RATE, DISPLAY_RATE * 0.45, DISPLAY_RATE * 0.10)
         disp = gr_filter.fir_filter_ccf(DISPLAY_DECIM, disp_taps)
         s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, self.fft_size)
@@ -238,6 +253,7 @@ class SdrServer(gr.top_block):
         self.combiner = None
         self.src = None
         self._demod_src = None
+        self._peak_probes = []
         gc.collect()                # force gr-sdrplay3 source destructor -> device deinit
 
     # ---- gain / headers ----------------------------------------------
@@ -271,10 +287,19 @@ class SdrServer(gr.top_block):
         g["rf_gr_db"] = int(round(-self.src.get_gain("RF")))   # actual (snapped) value
         self._lna_state = int(self.src.get_gain("LNAstate"))
 
+    def _peak_dbfs(self):
+        """Highest raw-stream peak across tuners, in dBFS (0 = fc32/ADC full scale)."""
+        if not self._peak_probes:
+            return -120.0
+        pk = max(p.level() for p in self._peak_probes)
+        return float(20.0 * np.log10(pk + 1e-9))
+
     def _spectrum_header(self):
+        peak = self._peak_dbfs()
         return {"source": "combined" if self._mode == "diversity" else "0",
                 "center_hz": int(self.center), "span_hz": int(DISPLAY_RATE),
-                "fft_size": self.fft_size, "ref_dbfs": 0}
+                "fft_size": self.fft_size, "ref_dbfs": 0,
+                "peak_dbfs": round(peak, 1), "overload": peak >= OVERLOAD_DBFS}
 
     # ---- VRX ----------------------------------------------------------
     def _make_vrx(self, freq_hz, mode="lsb", filter=None, volume=0.5, **_):

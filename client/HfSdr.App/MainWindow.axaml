@@ -40,6 +40,12 @@
         <Slider x:Name="IfSlider" Width="150" Minimum="20" Maximum="59"
                 VerticalAlignment="Center" ValueChanged="OnIfGainChanged"/>
         <TextBlock x:Name="IfLabel" Width="60" VerticalAlignment="Center" Text="40 dB"/>
+        <Border Width="1" Background="#444" Margin="4,2"/>
+        <Border x:Name="PeakBox" CornerRadius="3" Padding="6,2" VerticalAlignment="Center"
+                Background="Transparent">
+          <TextBlock x:Name="PeakLabel" VerticalAlignment="Center" MinWidth="130"
+                     Text="peak —" FontFamily="Consolas,monospace"/>
+        </Border>
       </StackPanel>
     </StackPanel>
 

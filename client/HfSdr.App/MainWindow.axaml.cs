@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Threading;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
@@ -270,7 +271,27 @@ public partial class MainWindow : Window
             _wf.Blit();
             Waterfall.InvalidateVisual();
             UpdateMarker();
+            ShowPeak(f);
         });
+    }
+
+    /// <summary>Peak/overload readout: green with headroom, amber when close,
+    /// red "OVERLOAD" at the server's threshold — so a silent overload can't hide.</summary>
+    private void ShowPeak(SpectrumFrame f)
+    {
+        if (double.IsNaN(f.PeakDbfs)) { PeakLabel.Text = "peak —"; return; }
+        if (f.Overload)
+        {
+            PeakLabel.Text = $"⚠ OVERLOAD {f.PeakDbfs:0.0} dBFS";
+            PeakLabel.Foreground = Brushes.White;
+            PeakBox.Background = Brushes.Firebrick;
+        }
+        else
+        {
+            PeakLabel.Text = $"peak {f.PeakDbfs:0.0} dBFS";
+            PeakLabel.Foreground = f.PeakDbfs >= -6 ? Brushes.Orange : Brushes.MediumSeaGreen;
+            PeakBox.Background = Brushes.Transparent;
+        }
     }
 
     private void OnAudio(short[] samples)
