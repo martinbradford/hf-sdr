@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
 namespace HfSdr.App;
@@ -12,7 +14,9 @@ public partial class MainWindow : Window
 {
     private readonly SdrClient _client = new();
     private WaterfallRenderer? _wf;
-    private WaveOutEvent? _waveOut;
+    private readonly MMDeviceEnumerator _mmEnum = new();
+    private readonly List<MMDevice?> _renderDevices = new();   // parallel to AudioDeviceBox; null = Windows default
+    private IWavePlayer? _waveOut;
     private BufferedWaveProvider? _audioBuf;
     private bool _connected;
 
@@ -28,7 +32,58 @@ public partial class MainWindow : Window
     private const int WaterfallWidth = 1024;
     private const int WaterfallHeight = 320;
 
-    public MainWindow() => InitializeComponent();
+    public MainWindow()
+    {
+        InitializeComponent();
+        PopulateAudioDevices();
+    }
+
+    /// <summary>List the active WASAPI render endpoints; index 0 is the Windows default.</summary>
+    private void PopulateAudioDevices()
+    {
+        AudioDeviceBox.Items.Add("Default (Windows)");
+        _renderDevices.Add(null);
+        foreach (var d in _mmEnum.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+        {
+            AudioDeviceBox.Items.Add(d.FriendlyName);
+            _renderDevices.Add(d);
+        }
+        AudioDeviceBox.SelectedIndex = 0;
+    }
+
+    /// <summary>Resolve the selected endpoint; "Default" tracks the current system default.</summary>
+    private MMDevice SelectedRenderDevice()
+    {
+        int i = AudioDeviceBox.SelectedIndex;
+        var dev = (i >= 0 && i < _renderDevices.Count) ? _renderDevices[i] : null;
+        return dev ?? _mmEnum.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+    }
+
+    /// <summary>(Re)create the output player on the currently selected device.</summary>
+    private void StartAudioOut()
+    {
+        _waveOut?.Dispose();
+        _audioBuf = new BufferedWaveProvider(new WaveFormat(48_000, 16, 1))
+        {
+            BufferDuration = TimeSpan.FromSeconds(2),   // ceiling; catch-up keeps latency low
+            DiscardOnBufferOverflow = true
+        };
+        // Shared mode; NAudio resamples our 48k/16/mono buffer to the endpoint's mix format.
+        _waveOut = new WasapiOut(SelectedRenderDevice(), AudioClientShareMode.Shared, true, 150);
+        _waveOut.Init(_audioBuf);
+        _waveOut.Play();
+    }
+
+    private void OnAudioDeviceChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (!_connected) return;   // just remember the choice until we connect
+        try
+        {
+            StartAudioOut();
+            StatusText.Text = $"Audio output → {AudioDeviceBox.SelectedItem}";
+        }
+        catch (Exception ex) { StatusText.Text = "Audio device switch failed: " + ex.Message; }
+    }
 
     private async void OnConnect(object? sender, RoutedEventArgs e)
     {
@@ -46,14 +101,7 @@ public partial class MainWindow : Window
                 return hello.GetProperty("server").GetString() ?? "?";
             });
 
-            _audioBuf = new BufferedWaveProvider(new WaveFormat(48_000, 16, 1))
-            {
-                BufferDuration = TimeSpan.FromSeconds(2),   // ceiling; catch-up keeps latency low
-                DiscardOnBufferOverflow = true
-            };
-            _waveOut = new WaveOutEvent { DesiredLatency = 150, NumberOfBuffers = 3 };
-            _waveOut.Init(_audioBuf);
-            _waveOut.Play();
+            StartAudioOut();
 
             _connected = true;
             StatusText.Text = $"Connected to {server}. Click the waterfall to tune a receiver.";

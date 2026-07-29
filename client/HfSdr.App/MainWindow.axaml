@@ -14,6 +14,9 @@
         <ComboBoxItem>lsb</ComboBoxItem>
         <ComboBoxItem>usb</ComboBoxItem>
       </ComboBox>
+      <TextBlock Text="Audio out:" VerticalAlignment="Center"/>
+      <ComboBox x:Name="AudioDeviceBox" Width="200"
+                SelectionChanged="OnAudioDeviceChanged"/>
       <TextBlock Text="← click the waterfall to tune" VerticalAlignment="Center" Opacity="0.7"/>
     </StackPanel>
 

@@ -54,7 +54,10 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
      `ctl.py` = tiny control CLI; `example_client.py` = smoke test.
    - Client: `client/HfSdr.App` (Avalonia 12 / .NET 10) — waterfall, **click-to-tune
      + mouse-wheel fine tuning** (50 Hz / Ctrl 10 Hz / Shift 500 Hz), LSB/USB,
-     int16 audio via NAudio. Proven end-to-end on real signals (decoded FT8).
+     int16 audio via NAudio. **Audio-output device selector** (WASAPI
+     `WasapiOut` — full endpoint names, e.g. a VB-Audio virtual cable to route
+     into WSJT-X; switchable live; device list captured at startup). Proven
+     end-to-end on real signals (decoded FT8).
      `dotnet build` works from here (SDK installed); GUI *run* needs a desktop.
    - **NEXT:** fix RF gain validation (gotcha #5); add mode+gain controls to the
      client; CAT/rig control (e.g. Hamlib rigctld) so WSJT-X logs the real freq;
