@@ -5,19 +5,42 @@
         Title="HF SDR — Client (architecture proof)">
   <DockPanel Margin="10">
 
-    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8" Margin="0,0,0,10">
-      <Button x:Name="ConnectBtn" Content="Connect" Click="OnConnect"/>
-      <TextBlock Text="Freq (MHz):" VerticalAlignment="Center"/>
-      <TextBox x:Name="FreqBox" Width="110" Text="7.150"/>
-      <Button x:Name="TuneBtn" Content="Tune" Click="OnTune"/>
-      <ComboBox x:Name="ModeBox" Width="90" SelectedIndex="0">
-        <ComboBoxItem>lsb</ComboBoxItem>
-        <ComboBoxItem>usb</ComboBoxItem>
-      </ComboBox>
-      <TextBlock Text="Audio out:" VerticalAlignment="Center"/>
-      <ComboBox x:Name="AudioDeviceBox" Width="200"
-                SelectionChanged="OnAudioDeviceChanged"/>
-      <TextBlock Text="← click the waterfall to tune" VerticalAlignment="Center" Opacity="0.7"/>
+    <StackPanel DockPanel.Dock="Top" Spacing="8" Margin="0,0,0,10">
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button x:Name="ConnectBtn" Content="Connect" Click="OnConnect"/>
+        <TextBlock Text="Freq (MHz):" VerticalAlignment="Center"/>
+        <TextBox x:Name="FreqBox" Width="110" Text="7.150"/>
+        <Button x:Name="TuneBtn" Content="Tune" Click="OnTune"/>
+        <ComboBox x:Name="ModeBox" Width="90" SelectedIndex="0">
+          <ComboBoxItem>lsb</ComboBoxItem>
+          <ComboBoxItem>usb</ComboBoxItem>
+        </ComboBox>
+        <TextBlock Text="Audio out:" VerticalAlignment="Center"/>
+        <ComboBox x:Name="AudioDeviceBox" Width="200"
+                  SelectionChanged="OnAudioDeviceChanged"/>
+        <TextBlock Text="← click the waterfall to tune" VerticalAlignment="Center" Opacity="0.7"/>
+      </StackPanel>
+
+      <StackPanel x:Name="ConfigBar" Orientation="Horizontal" Spacing="8"
+                  VerticalAlignment="Center" IsEnabled="False">
+        <TextBlock Text="Tuner:" VerticalAlignment="Center" FontWeight="Bold"/>
+        <RadioButton x:Name="SingleRadio" GroupName="tuner" Content="Single" IsChecked="True"
+                     VerticalAlignment="Center" IsCheckedChanged="OnTunerModeChanged"/>
+        <RadioButton x:Name="DiversityRadio" GroupName="tuner" Content="Diversity"
+                     VerticalAlignment="Center" IsCheckedChanged="OnTunerModeChanged"/>
+        <Border Width="1" Background="#444" Margin="4,2"/>
+        <TextBlock Text="Gain:" VerticalAlignment="Center" FontWeight="Bold"/>
+        <CheckBox x:Name="AgcBox" Content="AGC" IsChecked="True"
+                  VerticalAlignment="Center" IsCheckedChanged="OnAgcChanged"/>
+        <TextBlock Text="RF gr" VerticalAlignment="Center"/>
+        <Slider x:Name="RfSlider" Width="150" Minimum="0" Maximum="61"
+                VerticalAlignment="Center" ValueChanged="OnRfGainChanged"/>
+        <TextBlock x:Name="RfLabel" Width="120" VerticalAlignment="Center" Text="0 dB"/>
+        <TextBlock Text="IF gr" VerticalAlignment="Center"/>
+        <Slider x:Name="IfSlider" Width="150" Minimum="20" Maximum="59"
+                VerticalAlignment="Center" ValueChanged="OnIfGainChanged"/>
+        <TextBlock x:Name="IfLabel" Width="60" VerticalAlignment="Center" Text="40 dB"/>
+      </StackPanel>
     </StackPanel>
 
     <TextBlock x:Name="StatusText" DockPanel.Dock="Bottom" Margin="0,8,0,0"

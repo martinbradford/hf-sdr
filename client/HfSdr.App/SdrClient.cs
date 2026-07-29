@@ -46,8 +46,10 @@ public sealed class SdrClient : IDisposable
         _poller.RunAsync();
     }
 
-    /// <summary>Synchronous control request. Returns the "result" element (cloned).</summary>
-    public JsonElement Send(string cmd, object? parameters = null)
+    /// <summary>Synchronous control request. Returns the "result" element (cloned).
+    /// <paramref name="timeoutMs"/> defaults to 3 s; disruptive commands (e.g.
+    /// set_tuner_mode, whose dual-tuner init retries) need a longer allowance.</summary>
+    public JsonElement Send(string cmd, object? parameters = null, int timeoutMs = 3000)
     {
         lock (_ctrlLock)
         {
@@ -55,7 +57,7 @@ public sealed class SdrClient : IDisposable
             var req = new { id = Interlocked.Increment(ref _reqId), cmd, @params = parameters ?? new { } };
             _control.SendFrame(JsonSerializer.Serialize(req));
 
-            if (!_control.TryReceiveFrameString(TimeSpan.FromSeconds(3), out var reply) || reply is null)
+            if (!_control.TryReceiveFrameString(TimeSpan.FromMilliseconds(timeoutMs), out var reply) || reply is null)
                 throw new TimeoutException($"no reply to '{cmd}'");
 
             using var doc = JsonDocument.Parse(reply);
