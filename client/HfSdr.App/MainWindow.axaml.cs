@@ -31,6 +31,12 @@ public partial class MainWindow : Window
     private long _vrxFreq;
     private bool _busy;
 
+    private float[]? _lastMags;                   // most recent spectrum, for null-width estimation
+    private long _nullTargetFreq;                 // frequency under the last right-click
+    private bool _nullActive;
+    private long _nullCenterHz, _nullWidthHz;     // engaged null's target band (for the marker)
+    private DispatcherTimer? _nullTimer;          // polls get_status to animate null_depth_db
+
     private const int WaterfallWidth = 1024;
     private const int WaterfallHeight = 320;
 
@@ -91,16 +97,42 @@ public partial class MainWindow : Window
     private bool _suppressGain;   // guard: programmatic slider/checkbox updates must not send
     private bool _gainDirty;
     private bool _gainPushing;
+    private int[]? _rfSteps;      // discrete RF reductions (dB); when set, the slider is index-based
 
     private static int GainInt(JsonElement g, string name, int fallback) =>
         g.TryGetProperty(name, out var v) ? v.GetInt32() : fallback;
+
+    /// <summary>Index of the RF step closest to a given reduction (dB).</summary>
+    private int NearestRfIndex(int db)
+    {
+        if (_rfSteps is null || _rfSteps.Length == 0) return 0;
+        int best = 0;
+        for (int i = 1; i < _rfSteps.Length; i++)
+            if (Math.Abs(_rfSteps[i] - db) < Math.Abs(_rfSteps[best] - db)) best = i;
+        return best;
+    }
 
     /// <summary>Seed the gain UI from a server status "gain" block (ranges + values).</summary>
     private void InitGainControls(JsonElement g)
     {
         _suppressGain = true;
-        if (g.TryGetProperty("rf_gr_db_range", out var rr) && rr.GetArrayLength() == 2)
+        // RF gain is discrete LNA steps. If the server lists them, drive the slider
+        // by step index (one even detent per step) rather than a coarse dB range.
+        _rfSteps = null;
+        if (g.TryGetProperty("rf_gr_db_steps", out var rs) && rs.ValueKind == JsonValueKind.Array
+            && rs.GetArrayLength() > 1)
         {
+            var steps = new int[rs.GetArrayLength()];
+            for (int i = 0; i < steps.Length; i++) steps[i] = rs[i].GetInt32();
+            _rfSteps = steps;
+            RfSlider.Minimum = 0;
+            RfSlider.Maximum = steps.Length - 1;
+            RfSlider.TickFrequency = 1;
+            RfSlider.IsSnapToTickEnabled = true;
+        }
+        else if (g.TryGetProperty("rf_gr_db_range", out var rr) && rr.GetArrayLength() == 2)
+        {
+            RfSlider.IsSnapToTickEnabled = false;
             RfSlider.Minimum = rr[0].GetDouble();
             RfSlider.Maximum = rr[1].GetDouble();
         }
@@ -109,7 +141,8 @@ public partial class MainWindow : Window
             IfSlider.Minimum = ir[0].GetDouble();
             IfSlider.Maximum = ir[1].GetDouble();
         }
-        RfSlider.Value = GainInt(g, "rf_gr_db", 0);
+        RfSlider.Value = _rfSteps is null ? GainInt(g, "rf_gr_db", 0)
+                                          : NearestRfIndex(GainInt(g, "rf_gr_db", 0));
         IfSlider.Value = GainInt(g, "if_gr_db", 40);
         AgcBox.IsChecked = !g.TryGetProperty("agc", out var agc) || agc.GetBoolean();
         _suppressGain = false;
@@ -124,7 +157,7 @@ public partial class MainWindow : Window
         int ifg = GainInt(g, "if_gr_db", (int)IfSlider.Value);
         int lna = GainInt(g, "lna_state", -1);
         _suppressGain = true;
-        RfSlider.Value = rf;                       // show the value the driver snapped to
+        RfSlider.Value = _rfSteps is null ? rf : NearestRfIndex(rf);   // show the driver-snapped step
         _suppressGain = false;
         RfLabel.Text = lna >= 0 ? $"{rf} dB (LNA {lna})" : $"{rf} dB";
         IfLabel.Text = $"{ifg} dB";
@@ -153,7 +186,9 @@ public partial class MainWindow : Window
             {
                 _gainDirty = false;
                 bool agc = AgcBox.IsChecked == true;
-                int rf = (int)Math.Round(RfSlider.Value);
+                int rfIdx = (int)Math.Round(RfSlider.Value);
+                int rf = _rfSteps is null ? rfIdx
+                       : _rfSteps[Math.Clamp(rfIdx, 0, _rfSteps.Length - 1)];
                 int ifg = (int)Math.Round(IfSlider.Value);
                 var res = await Task.Run(() =>
                     _client.Send("set_gain", new { agc, rf_gr_db = rf, if_gr_db = ifg }));
@@ -183,6 +218,32 @@ public partial class MainWindow : Window
         }
         if (st.TryGetProperty("gain", out var g)) InitGainControls(g);
         AdoptVrx(st);
+        ApplyNullStatus(st);
+    }
+
+    /// <summary>Null is diversity-only. Enable the bar in diversity, and adopt any
+    /// null the server already has engaged (e.g. reconnect, or set via ctl.py).</summary>
+    private void ApplyNullStatus(JsonElement st)
+    {
+        bool diversity = st.TryGetProperty("tuner_mode", out var tm)
+                         && tm.GetString() == "diversity";
+        NullBar.IsEnabled = diversity;
+        if (diversity
+            && st.TryGetProperty("combiner", out var c)
+            && c.TryGetProperty("type", out var t) && t.GetString() == "null"
+            && c.TryGetProperty("active", out var a) && a.GetBoolean())
+        {
+            _nullActive = true;
+            _nullCenterHz = c.GetProperty("center_hz").GetInt64();
+            _nullWidthHz = c.GetProperty("width_hz").GetInt64();
+            SetNullEngagedUi(true);
+            ShowNull(c);
+            StartNullPolling();
+        }
+        else
+        {
+            ResetNullUi();
+        }
     }
 
     /// <summary>A mode switch drops and re-creates VRXs with fresh ids; adopt the
@@ -267,10 +328,12 @@ public partial class MainWindow : Window
                 _wf = new WaterfallRenderer(WaterfallWidth, WaterfallHeight);
                 Waterfall.Source = _wf.Bitmap;
             }
+            _lastMags = f.Mags;
             _wf.AddRow(f.Mags);
             _wf.Blit();
             Waterfall.InvalidateVisual();
             UpdateMarker();
+            UpdateNullMarker();
             ShowPeak(f);
         });
     }
@@ -326,6 +389,12 @@ public partial class MainWindow : Window
         if (w <= 0) return;
         double x = e.GetPosition(Waterfall).X;
         long freq = _dispCenter - _dispSpan / 2 + (long)(x / w * _dispSpan);
+        // Right-click just records the target; the context menu (below) acts on it.
+        if (e.GetCurrentPoint(Waterfall).Properties.IsRightButtonPressed)
+        {
+            _nullTargetFreq = freq;
+            return;
+        }
         string mode = ModeBox.SelectedIndex == 1 ? "usb" : "lsb";
         await SetVrx(freq, mode);
     }
@@ -420,8 +489,204 @@ public partial class MainWindow : Window
         Marker.IsVisible = true;
     }
 
+    // ---- diversity null (targeted interference canceller) -------------
+    private bool _suppressNull;    // guard: programmatic slider/checkbox updates must not send
+    private bool _nullTrimDirty;
+    private bool _nullTrimPushing;
+
+    /// <summary>Right-click → "Null this source": engage a null on the last
+    /// right-clicked frequency, auto-sizing the target band from the spectrum.</summary>
+    private async void OnNullThis(object? sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        if (DiversityRadio.IsChecked != true)
+        {
+            StatusText.Text = "Null needs Diversity mode — switch the tuner to Diversity first.";
+            return;
+        }
+        long width = EstimateNullWidth(_nullTargetFreq);
+        try
+        {
+            var res = await Task.Run(() => _client.Send("null_signal",
+                new { center_hz = _nullTargetFreq, width_hz = width, track = true }));
+            _nullActive = true;
+            _nullCenterHz = _nullTargetFreq;
+            _nullWidthHz = width;
+            SetNullEngagedUi(true);
+            ShowNull(res);
+            UpdateNullMarker();
+            StartNullPolling();
+            StatusText.Text = $"Nulling {_nullTargetFreq / 1e6:F4} MHz (±{width / 2000.0:F1} kHz) — depth climbing…";
+        }
+        catch (Exception ex) { StatusText.Text = "Null failed: " + ex.Message; }
+    }
+
+    private async void OnClearNull(object? sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        try { await Task.Run(() => _client.Send("null_signal", new { clear = true })); }
+        catch (Exception ex) { StatusText.Text = "Clear null failed: " + ex.Message; }
+        ResetNullUi();
+        StatusText.Text = "Null cleared — back to MRC diversity.";
+    }
+
+    private void OnNullTrackChanged(object? sender, RoutedEventArgs e)
+    {
+        if (!_connected || _suppressNull || !_nullActive) return;
+        bool track = NullTrackBox.IsChecked == true;
+        _ = SendNull(new { track });
+    }
+
+    private void OnNullSpeedChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (!_connected || _suppressNull || !_nullActive) return;
+        string speed = NullSpeedBox.SelectedIndex switch { 0 => "fast", 2 => "slow", _ => "med" };
+        _ = SendNull(new { track_speed = speed });
+    }
+
+    private void OnNullTrimChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    {
+        if (!_connected || _suppressNull || !_nullActive) return;
+        _nullTrimDirty = true;
+        PushNullTrim();
+    }
+
+    /// <summary>Coalesced manual-trim sender: pushes the latest amp/phase, never
+    /// overlapping requests. Manual trim switches the server out of tracking.</summary>
+    private async void PushNullTrim()
+    {
+        if (_nullTrimPushing) return;
+        _nullTrimPushing = true;
+        try
+        {
+            while (_connected && _nullActive && _nullTrimDirty)
+            {
+                _nullTrimDirty = false;
+                double amp = NullAmpSlider.Value;
+                double phase = NullPhaseSlider.Value;
+                var res = await Task.Run(() => _client.Send("null_signal",
+                    new { amp, phase_deg = phase }));
+                ShowNull(res);
+            }
+        }
+        catch (Exception ex) { StatusText.Text = "null trim failed: " + ex.Message; }
+        finally { _nullTrimPushing = false; }
+    }
+
+    private async Task SendNull(object p)
+    {
+        try { ShowNull(await Task.Run(() => _client.Send("null_signal", p))); }
+        catch (Exception ex) { StatusText.Text = "null failed: " + ex.Message; }
+    }
+
+    /// <summary>Auto-size the null band: find the local peak near the click and
+    /// take its −10 dB width from the latest spectrum. Falls back to 12 kHz.</summary>
+    private long EstimateNullWidth(long freq)
+    {
+        const long fallback = 12_000;
+        var mags = _lastMags;
+        if (mags is null || mags.Length < 8 || _dispSpan <= 0) return fallback;
+        int n = mags.Length;
+        double hzPerBin = (double)_dispSpan / n;
+        long left = _dispCenter - _dispSpan / 2;
+        int click = (int)Math.Clamp((freq - left) / hzPerBin, 0, n - 1);
+        int span = Math.Max(1, (int)(4000 / hzPerBin));      // snap to the peak within ±4 kHz
+        int peak = click;
+        for (int i = Math.Max(0, click - span); i <= Math.Min(n - 1, click + span); i++)
+            if (mags[i] > mags[peak]) peak = i;
+        double thresh = mags[peak] - 10.0;
+        int lo = peak, hi = peak;
+        while (lo > 0 && mags[lo - 1] >= thresh) lo--;
+        while (hi < n - 1 && mags[hi + 1] >= thresh) hi++;
+        long width = (long)((hi - lo + 1) * hzPerBin);
+        return Math.Clamp(width, 3_000, 40_000);
+    }
+
+    private void StartNullPolling()
+    {
+        _nullTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        _nullTimer.Tick -= NullPollTick;
+        _nullTimer.Tick += NullPollTick;
+        _nullTimer.Start();
+    }
+
+    private async void NullPollTick(object? sender, EventArgs e)
+    {
+        if (!_connected || !_nullActive) { _nullTimer?.Stop(); return; }
+        try
+        {
+            var st = await Task.Run(() => _client.Send("get_status"));
+            if (st.TryGetProperty("combiner", out var c)
+                && c.TryGetProperty("type", out var t) && t.GetString() == "null")
+                ShowNull(c);
+        }
+        catch { /* transient; next tick retries */ }
+    }
+
+    /// <summary>Reflect a combiner-null object (from a reply or status) in the readout,
+    /// seeding the trim controls without triggering sends.</summary>
+    private void ShowNull(JsonElement c)
+    {
+        if (c.ValueKind != JsonValueKind.Object) return;
+        double depth = c.TryGetProperty("null_depth_db", out var d) ? d.GetDouble() : 0;
+        double amp = c.TryGetProperty("amp", out var a) ? a.GetDouble() : 0;
+        double phase = c.TryGetProperty("phase_deg", out var p) ? p.GetDouble() : 0;
+        bool track = !c.TryGetProperty("track", out var tr) || tr.GetBoolean();
+        bool manual = c.TryGetProperty("manual", out var m) && m.GetBoolean();
+
+        _suppressNull = true;
+        NullAmpSlider.Value = Math.Clamp(amp, NullAmpSlider.Minimum, NullAmpSlider.Maximum);
+        NullPhaseSlider.Value = Math.Clamp(phase, NullPhaseSlider.Minimum, NullPhaseSlider.Maximum);
+        NullTrackBox.IsChecked = track;
+        if (c.TryGetProperty("track_speed", out var sp))
+            NullSpeedBox.SelectedIndex = sp.GetString() switch { "fast" => 0, "slow" => 2, _ => 1 };
+        _suppressNull = false;
+
+        string state = manual ? "manual" : track ? "tracking" : "frozen";
+        NullStatusLabel.Text = $"−{depth:0.0} dB @ {_nullCenterHz / 1e6:F4} ({state})";
+        // green once it's biting, amber while it settles
+        NullStatusLabel.Foreground = depth >= 15 ? Brushes.MediumSeaGreen
+                                    : depth >= 6 ? Brushes.Orange : Brushes.Gray;
+    }
+
+    private void SetNullEngagedUi(bool engaged)
+    {
+        NullTrackBox.IsEnabled = engaged;
+        NullSpeedBox.IsEnabled = engaged;
+        NullAmpSlider.IsEnabled = engaged;
+        NullPhaseSlider.IsEnabled = engaged;
+        NullClearBtn.IsEnabled = engaged;
+    }
+
+    private void ResetNullUi()
+    {
+        _nullActive = false;
+        _nullTimer?.Stop();
+        SetNullEngagedUi(false);
+        NullMarker.IsVisible = false;
+        NullStatusLabel.Text = "off — right-click a signal to null it";
+        NullStatusLabel.Foreground = Brushes.Gray;
+    }
+
+    /// <summary>Shade the nulled band across the waterfall so the target is visible.</summary>
+    private void UpdateNullMarker()
+    {
+        double w = Waterfall.Bounds.Width, h = Waterfall.Bounds.Height;
+        if (!_nullActive || _dispSpan <= 0 || w <= 0) { NullMarker.IsVisible = false; return; }
+        double left = (double)(_nullCenterHz - _nullWidthHz / 2 - (_dispCenter - _dispSpan / 2)) / _dispSpan * w;
+        double width = (double)_nullWidthHz / _dispSpan * w;
+        double x0 = Math.Max(0, left), x1 = Math.Min(w, left + width);
+        if (x1 <= 0 || x0 >= w) { NullMarker.IsVisible = false; return; }
+        Canvas.SetLeft(NullMarker, x0);
+        Canvas.SetTop(NullMarker, 0);
+        NullMarker.Width = Math.Max(1, x1 - x0);
+        NullMarker.Height = h;
+        NullMarker.IsVisible = true;
+    }
+
     protected override void OnClosed(EventArgs e)
     {
+        _nullTimer?.Stop();
         _waveOut?.Dispose();
         _client.Dispose();
         base.OnClosed(e);

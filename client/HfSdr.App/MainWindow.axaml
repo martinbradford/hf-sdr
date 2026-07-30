@@ -47,6 +47,32 @@
                      Text="peak —" FontFamily="Consolas,monospace"/>
         </Border>
       </StackPanel>
+
+      <StackPanel x:Name="NullBar" Orientation="Horizontal" Spacing="8"
+                  VerticalAlignment="Center" IsEnabled="False">
+        <TextBlock Text="Null:" VerticalAlignment="Center" FontWeight="Bold"/>
+        <Border x:Name="NullBox" CornerRadius="3" Padding="6,2" VerticalAlignment="Center"
+                Background="Transparent">
+          <TextBlock x:Name="NullStatusLabel" VerticalAlignment="Center" MinWidth="230"
+                     Text="off — right-click a signal to null it"
+                     FontFamily="Consolas,monospace"/>
+        </Border>
+        <CheckBox x:Name="NullTrackBox" Content="Track" IsChecked="True" IsEnabled="False"
+                  VerticalAlignment="Center" IsCheckedChanged="OnNullTrackChanged"/>
+        <ComboBox x:Name="NullSpeedBox" Width="80" SelectedIndex="1" IsEnabled="False"
+                  VerticalAlignment="Center" SelectionChanged="OnNullSpeedChanged">
+          <ComboBoxItem>Fast</ComboBoxItem>
+          <ComboBoxItem>Med</ComboBoxItem>
+          <ComboBoxItem>Slow</ComboBoxItem>
+        </ComboBox>
+        <TextBlock Text="amp" VerticalAlignment="Center"/>
+        <Slider x:Name="NullAmpSlider" Width="110" Minimum="0" Maximum="4" IsEnabled="False"
+                VerticalAlignment="Center" ValueChanged="OnNullTrimChanged"/>
+        <TextBlock Text="phase" VerticalAlignment="Center"/>
+        <Slider x:Name="NullPhaseSlider" Width="110" Minimum="-180" Maximum="180" IsEnabled="False"
+                VerticalAlignment="Center" ValueChanged="OnNullTrimChanged"/>
+        <Button x:Name="NullClearBtn" Content="Clear null" IsEnabled="False" Click="OnClearNull"/>
+      </StackPanel>
     </StackPanel>
 
     <TextBlock x:Name="StatusText" DockPanel.Dock="Bottom" Margin="0,8,0,0"
@@ -55,8 +81,16 @@
     <Border BorderBrush="#333" BorderThickness="1">
       <Grid>
         <Image x:Name="Waterfall" Stretch="Fill"
-               PointerPressed="OnWaterfallClick" PointerWheelChanged="OnWaterfallWheel"/>
+               PointerPressed="OnWaterfallClick" PointerWheelChanged="OnWaterfallWheel">
+          <Image.ContextMenu>
+            <ContextMenu Placement="Pointer">
+              <MenuItem Header="Null this source" Click="OnNullThis"/>
+              <MenuItem Header="Clear null" Click="OnClearNull"/>
+            </ContextMenu>
+          </Image.ContextMenu>
+        </Image>
         <Canvas x:Name="Overlay" IsHitTestVisible="False">
+          <Rectangle x:Name="NullMarker" Fill="#55F44336" IsVisible="False"/>
           <Rectangle x:Name="Marker" Width="2" Fill="#FFEB3B" IsVisible="False"/>
         </Canvas>
       </Grid>

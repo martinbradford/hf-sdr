@@ -51,6 +51,13 @@ INIT_VERIFY_S = 1.5                          # wait to confirm samples flow
 INIT_RETRIES = 3                             # dual-tuner init attempts
 PEAK_BLOCK = 4096                            # samples per raw-stream peak-hold block
 OVERLOAD_DBFS = -1.0                         # peak at/above this = ADC overload (fc32 full scale = 0 dBFS)
+NULL_DECIM = 40                              # -> 50 kHz band-isolation rate for null estimation
+NULL_RATE = SOURCE_RATE // NULL_DECIM        # 50 kHz
+NULL_WIDTH_DEFAULT = 12_000                  # target estimation bandwidth (Hz) if unspecified
+NULL_WIDTH_RANGE = (1_000, 40_000)           # clamp for the target width
+NULL_ALPHA = {"fast": 0.15, "med": 0.05, "slow": 0.015}   # tracking-speed -> leaky-integrator alpha
+NULL_FADE_FRAC = 0.25                         # block power below this fraction of typical = fade -> hold
+NULL_MAX_W = 8.0                              # cap |w| so a fade can't amplify branch-B noise
 
 DEFAULT_FILTERS = {           # audio passband edges (Hz) per mode
     "lsb": (-3000, -200),     # wide enough for data (FT8 ~0-3000 Hz) and voice
@@ -100,24 +107,109 @@ class Publisher:
 # --------------------------------------------------------------------------
 # Custom blocks
 # --------------------------------------------------------------------------
+class NullState:
+    """Shared handle between the null estimator (which measures the cancelling
+    weight in the targeted band) and the combiner (which applies it broadband).
+
+    Nulling model: an interferer arrives as h0*i on branch 0 and h1*i on branch
+    1. y = x0 - w*x1 cancels it when w = h0/h1. We estimate that ratio from the
+    branches band-limited to the target region (where the interferer dominates),
+    so the null locks onto *that* emitter's spatial signature and leaves signals
+    elsewhere in the passband intact.
+    """
+    def __init__(self):
+        self.active = False       # null engaged (combiner subtracts w*x1)?
+        self.track = True         # keep re-estimating (False = freeze weight)
+        self.manual = False       # manual weight override (estimator won't set w)
+        self.w = 0 + 0j           # applied cancelling weight  (h0/h1)
+        self.r = 0 + 0j           # latest estimate (may differ from w if frozen)
+        self.depth_db = 0.0       # measured cancellation in the target band
+        self.center_hz = 0        # target centre (absolute Hz)
+        self.width_hz = 0         # target estimation bandwidth
+        self.speed = "med"        # tracking speed preset
+        self.alpha = NULL_ALPHA["med"]   # leaky-integrator rate (set from speed)
+
+
 class DiversityCombiner(gr.sync_block):
-    """Phase/amplitude-aligned MRC combiner for two coherent branches.
-    g = h1/h0 = <x1 conj(x0)>/<|x0|^2> (leaky); y = x0 + conj(g)*x1."""
-    def __init__(self, alpha=5e-3):
+    """Coherent two-branch combiner with two modes.
+
+    MRC (default): maximise combined SNR. g = h1/h0 = <x1 conj(x0)>/<|x0|^2>
+    (leaky); y = x0 + conj(g)*x1.
+
+    Null (when null_state.active): cancel a targeted interferer using the weight
+    the NullEstimator measures in its band. y = x0 - w*x1.
+    """
+    def __init__(self, null_state, alpha=5e-3):
         gr.sync_block.__init__(self, "diversity_combiner",
                                [np.complex64, np.complex64], [np.complex64])
         self.alpha = alpha
         self.g_num = 0 + 0j
         self.g_den = 1e-12
         self.g = 0 + 0j
+        self._null = null_state
 
     def work(self, input_items, output_items):
-        x0, x1, a = input_items[0], input_items[1], self.alpha
+        x0, x1 = input_items[0], input_items[1]
+        if self._null.active:
+            output_items[0][:] = x0 - self._null.w * x1
+            return len(output_items[0])
+        a = self.alpha
         self.g_num = (1 - a) * self.g_num + a * np.mean(x1 * np.conj(x0))
         self.g_den = (1 - a) * self.g_den + a * np.mean((x0 * np.conj(x0)).real)
         self.g = self.g_num / self.g_den
         output_items[0][:] = x0 + np.conj(self.g) * x1
         return len(output_items[0])
+
+
+class NullEstimator(gr.sync_block):
+    """Estimates the cancelling weight w = h0/h1 from two band-limited branches.
+
+    Fed the target region of both branches (freq-xlated + decimated so the
+    interferer dominates). Leaky-integrates w = <x0 conj(x1)>/<|x1|^2>, and
+    measures the achieved null depth as <|x0|^2>/<|x0 - w*x1|^2> in that band.
+    A sink (no outputs); writes results into the shared NullState.
+
+    Fade-robust: a distant, fading source dips on branch B independently of
+    branch A, which drives the denominator toward the noise floor and makes the
+    raw ratio blow up (and thrash). So we (a) skip estimation during a fade —
+    hold the last good weight — detected as this block's branch-B power dropping
+    well below its typical level; (b) regularise the denominator; and (c) cap
+    |w| so a momentary spike can't amplify branch-B noise. Tracking rate (alpha)
+    is read live from the NullState so the client can pick Fast/Med/Slow.
+    """
+    def __init__(self, null_state):
+        gr.sync_block.__init__(self, "null_estimator",
+                               [np.complex64, np.complex64], [])
+        self._s = null_state
+        self._num = 0 + 0j        # <x0 conj(x1)>
+        self._den = 1e-12         # <|x1|^2>
+        self._p0 = 1e-12          # <|x0|^2>  (reference band power)
+        self._pe = 1e-12          # <|residual|^2>
+        self._ref = 1e-12         # typical branch-B band power (rise-fast/decay-slow) for fade detect
+
+    def work(self, input_items, output_items):
+        x0, x1 = input_items[0], input_items[1]
+        a = self._s.alpha
+        p1 = float(np.mean((x1 * np.conj(x1)).real))
+        # Typical branch-B level: jump up to peaks, decay slowly. A fade reads as
+        # this block sitting well below it — then we hold rather than divide into noise.
+        self._ref = max(self._ref * 0.999, p1)
+        if p1 < NULL_FADE_FRAC * self._ref:
+            return len(x1)                       # fade: hold weight, depth, everything
+        self._num = (1 - a) * self._num + a * np.mean(x0 * np.conj(x1))
+        self._den = (1 - a) * self._den + a * p1
+        w = self._num / (self._den + 1e-6 * self._ref + 1e-12)   # regularised
+        mag = abs(w)
+        if mag > NULL_MAX_W:
+            w *= NULL_MAX_W / mag                 # cap: never amplify branch-B noise
+        self._s.r = w
+        if self._s.track and not self._s.manual:
+            self._s.w = w
+        resid = x0 - self._s.w * x1
+        self._p0 = (1 - a) * self._p0 + a * float(np.mean((x0 * np.conj(x0)).real))
+        self._pe = (1 - a) * self._pe + a * float(np.mean((resid * np.conj(resid)).real))
+        self._s.depth_db = float(10.0 * np.log10(self._p0 / (self._pe + 1e-30)))
+        return len(x1)
 
 
 class SpectrumSink(gr.sync_block):
@@ -176,6 +268,7 @@ class SdrServer(gr.top_block):
         self.fft_size = fft_size
         self.gain = {"agc": True, "if_gr_db": 40, "rf_gr_db": 0, "agc_setpoint_dbfs": -30}
         self._lna_state = 0                # resulting LNA state after the last RF apply
+        self._rf_steps = None              # discrete valid RF reductions (dB), enumerated once
         self._peak_probes = []             # per-tuner raw-stream peak-hold probes
         self._vrx = {}
         self._next_id = 1
@@ -187,6 +280,8 @@ class SdrServer(gr.top_block):
         self.combiner = None
         self._demod_src = None            # block VRXs + spectrum tap off (mode-dependent)
         self.spec_sink = None
+        self._null = NullState()          # persists across engage/clear
+        self._null_chain = None           # [xlate0, xlate1, estimator] while engaged
         self._build(self._mode)
 
     # ---- flowgraph construction --------------------------------------
@@ -205,17 +300,34 @@ class SdrServer(gr.top_block):
         src.set_center_freq(self.center)       # single-form (both tuners locked in diversity)
         src.set_bandwidth(1_536_000)
         self.src = src
+        self._enumerate_rf_steps()             # discover the discrete LNA steps (cached)
         self._apply_gain()                     # single-form gain (both tuners in diversity)
         src.set_dc_offset_mode(True)
         src.set_iq_balance_mode(True)
         return src
+
+    def _enumerate_rf_steps(self):
+        """RF gain reduction is a set of discrete, band-limited LNA states (not
+        continuous). Sweep the requested range once and record the distinct
+        values the driver snaps to, so the client can offer one detent per step
+        instead of a coarse continuous slider. Cached (fixed across HF). Runs
+        before start()/enable, and restores the configured RF value afterwards."""
+        if self._rf_steps is not None:
+            return
+        lo, hi = self._gr_range("RF")
+        seen = set()
+        for req in range(int(lo), int(hi) + 1):
+            self.src.set_gain(-float(req), "RF")
+            seen.add(int(round(-self.src.get_gain("RF"))))
+        self._rf_steps = sorted(seen)
+        self.src.set_gain(-float(_clamp(self.gain["rf_gr_db"], lo, hi)), "RF")   # restore
 
     def _build(self, mode):
         """Build source + combiner (if diversity) + spectrum chain. Leaves the
         graph stopped and VRX-less; caller re-adds VRXs and starts."""
         src = self._build_source(mode)
         if mode == "diversity":
-            self.combiner = DiversityCombiner()
+            self.combiner = DiversityCombiner(self._null)
             self.connect((src, 0), (self.combiner, 0))
             self.connect((src, 1), (self.combiner, 1))
             self._demod_src = self.combiner
@@ -254,6 +366,8 @@ class SdrServer(gr.top_block):
         self.src = None
         self._demod_src = None
         self._peak_probes = []
+        self._null_chain = None            # blocks gone with disconnect_all
+        self._null.active = False          # null is meaningless outside this graph
         gc.collect()                # force gr-sdrplay3 source destructor -> device deinit
 
     # ---- gain / headers ----------------------------------------------
@@ -375,6 +489,7 @@ class SdrServer(gr.top_block):
     def _gain_public(self):
         return {**self.gain, "lna_state": self._lna_state,
                 "rf_gr_db_range": list(self._gr_range("RF")),
+                "rf_gr_db_steps": self._rf_steps,
                 "if_gr_db_range": list(self._gr_range("IF"))}
 
     def set_gain(self, **kw):
@@ -382,6 +497,97 @@ class SdrServer(gr.top_block):
         self.gain["agc"] = bool(self.gain["agc"])   # keep the driver bool clean
         self._apply_gain()
         return self._gain_public()
+
+    # ---- diversity null (targeted interference canceller) -------------
+    def _null_taps(self, width_hz):
+        cutoff = width_hz / 2.0
+        trans = max(width_hz / 4.0, 2_000.0)
+        return firdes.low_pass(1.0, SOURCE_RATE, cutoff, trans)
+
+    def _engage_null(self, center_hz, width_hz, track):
+        if self._mode != "diversity":
+            raise ProtoError("wrong_mode", "null requires diversity tuner mode")
+        center_hz = int(center_hz)
+        width_hz = int(_clamp(width_hz, *NULL_WIDTH_RANGE))
+        if abs(center_hz - self.center) > SOURCE_RATE / 2 - width_hz:
+            raise ProtoError("out_of_range", "null target outside capture window")
+        offset = center_hz - self.center
+        taps = self._null_taps(width_hz)
+        if self._null_chain is None:
+            # build the band-isolation tap on both branches + estimator
+            xl0 = gr_filter.freq_xlating_fir_filter_ccf(NULL_DECIM, taps, offset, SOURCE_RATE)
+            xl1 = gr_filter.freq_xlating_fir_filter_ccf(NULL_DECIM, taps, offset, SOURCE_RATE)
+            est = NullEstimator(self._null)
+            self.lock()
+            self.connect((self.src, 0), xl0, (est, 0))
+            self.connect((self.src, 1), xl1, (est, 1))
+            self.unlock()
+            self._null_chain = [xl0, xl1, est]
+        else:                                   # retarget an existing null
+            xl0, xl1, _ = self._null_chain
+            for xl in (xl0, xl1):
+                xl.set_taps(taps)
+                xl.set_center_freq(offset)
+        self._null.manual = False
+        self._null.track = bool(track)
+        self._null.center_hz = center_hz
+        self._null.width_hz = width_hz
+        self._null.active = True
+
+    def _set_null_weight(self, amp, phase_deg):
+        if not self._null.active:
+            raise ProtoError("bad_request", "no active null; target one with center_hz first")
+        amp = float(amp if amp is not None else abs(self._null.w))
+        ph = float(phase_deg if phase_deg is not None else np.degrees(np.angle(self._null.w)))
+        self._null.manual = True
+        self._null.w = amp * np.exp(1j * np.radians(ph))
+
+    def _clear_null(self):
+        if self._null_chain is not None:
+            xl0, xl1, est = self._null_chain
+            self.lock()
+            self.disconnect((self.src, 0), xl0, (est, 0))
+            self.disconnect((self.src, 1), xl1, (est, 1))
+            self.unlock()
+            self._null_chain = None
+        self._null.active = False
+        self._null.manual = False
+        self._null.w = 0 + 0j
+
+    def _set_track_speed(self, speed):
+        speed = str(speed).lower()
+        if speed not in NULL_ALPHA:
+            raise ProtoError("bad_request", f"track_speed must be one of {list(NULL_ALPHA)}")
+        self._null.speed = speed
+        self._null.alpha = NULL_ALPHA[speed]
+
+    def null_signal(self, clear=False, center_hz=None, width_hz=None,
+                    track=None, amp=None, phase_deg=None, track_speed=None, **_):
+        """Engage / retarget / trim / clear the diversity interference null."""
+        if clear:
+            self._clear_null()
+            return self._null_public()
+        if center_hz is not None:
+            self._engage_null(center_hz, width_hz or NULL_WIDTH_DEFAULT,
+                              True if track is None else track)
+        if track_speed is not None:
+            self._set_track_speed(track_speed)
+        if amp is not None or phase_deg is not None:
+            self._set_null_weight(amp, phase_deg)         # -> manual mode
+        elif track is not None and center_hz is None:     # freeze/thaw only
+            if not self._null.active:
+                raise ProtoError("bad_request", "no active null")
+            self._null.track = bool(track)
+            if track:
+                self._null.manual = False
+        return self._null_public()
+
+    def _null_public(self):
+        s = self._null
+        return {"active": s.active, "track": s.track, "manual": s.manual,
+                "amp": float(abs(s.w)), "phase_deg": float(np.degrees(np.angle(s.w))),
+                "null_depth_db": round(s.depth_db, 1), "track_speed": s.speed,
+                "center_hz": s.center_hz, "width_hz": s.width_hz}
 
     def set_spectrum(self, rate_hz=None, **_):
         if rate_hz:
@@ -434,9 +640,12 @@ class SdrServer(gr.top_block):
             "streaming": {"audio": self._audio_on, "spectrum": self._spectrum_on},
         }
         if self._mode == "diversity" and self.combiner is not None:
-            g = self.combiner.g
-            st["combiner"] = {"type": "mrc", "auto": True, "amp": float(abs(g)),
-                              "phase_deg": float(np.degrees(np.angle(g)))}
+            if self._null.active:
+                st["combiner"] = {"type": "null", **self._null_public()}
+            else:
+                g = self.combiner.g
+                st["combiner"] = {"type": "mrc", "auto": True, "amp": float(abs(g)),
+                                  "phase_deg": float(np.degrees(np.angle(g)))}
         return st
 
 
@@ -450,7 +659,7 @@ def control_loop(ctx, port, srv, stop_evt):
     caps = {"tuner_modes": list(TUNER_MODES), "demod_modes": list(DEFAULT_FILTERS),
             "max_vrx": MAX_VRX, "sample_rates_hz": [SOURCE_RATE],
             "audio_rate_hz": AUDIO_RATE, "audio_formats": ["int16"],
-            "features": ["multi_vrx", "diversity"]}
+            "features": ["multi_vrx", "diversity", "diversity_null"]}
 
     def handle(cmd, p):
         if cmd == "hello":
@@ -465,6 +674,8 @@ def control_loop(ctx, port, srv, stop_evt):
             return srv.set_center_freq(p["hz"])
         if cmd == "set_gain":
             return srv.set_gain(**p)
+        if cmd == "null_signal":
+            return srv.null_signal(**p)
         if cmd == "configure_spectrum":
             return srv.set_spectrum(**p)
         if cmd == "add_vrx":

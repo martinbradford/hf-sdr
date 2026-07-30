@@ -51,21 +51,47 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
    - Server: `server/python/headless/server.py` — capture + spectrum + multi-VRX
      audio over ZMQ; dynamic VRX via lock()/unlock(); **live tuner-mode switching
      single↔diversity over the control channel** (`set_tuner_mode`; see gotcha #3).
+     **Targeted diversity null** (`null_signal`): point at an interferer's
+     frequency and the server band-isolates both branches there, estimates the
+     cancelling weight `w = h0/h1`, and applies `y = x0 − w·x1` across the whole
+     capture — a DSP phasing canceller (like an MFJ-1026/NCC-1, but computed
+     from where you point instead of tuned by ear). Auto-tracks by default;
+     `track:false` freezes; `track_speed` (fast/med/slow) sets the adaptation
+     time constant; `amp`/`phase_deg` hand-trim; `clear:true` disengages.
+     Reports the measured `null_depth_db`. Fade-robust for distant skywave
+     sources: during a deep branch-B fade it holds the last weight instead of
+     dividing into the noise, regularises the denominator, and caps `|w|` (an
+     un-gated weight otherwise wanders wildly on a fading source — use `slow`).
+     Offline proof: `test_null.py` (no hardware — 58 dB cancel on a stable
+     source, wanted signal untouched; plus a fading case that stays bounded).
      `ctl.py` = tiny control CLI; `example_client.py` = smoke test.
    - Client: `client/HfSdr.App` (Avalonia 12 / .NET 10) — waterfall, **click-to-tune
      + mouse-wheel fine tuning** (50 Hz / Ctrl 10 Hz / Shift 500 Hz), LSB/USB,
      int16 audio via NAudio. **Audio-output device selector** (WASAPI
      `WasapiOut` — full endpoint names, e.g. a VB-Audio virtual cable to route
-     into WSJT-X; switchable live; device list captured at startup). Proven
-     end-to-end on real signals (decoded FT8).
+     into WSJT-X; switchable live; device list captured at startup).
+     **Gain controls** (AGC / RF-gr slider that snaps to LNA steps + shows
+     `lna_state` / IF-gr slider), **single↔diversity tuner radios** (locks UI
+     during the ~seconds switch, re-adopts the restored VRX, reverts on
+     dual-tuner init failure), and a **peak / OVERLOAD readout** (green/amber/red)
+     fed by `peak_dbfs`/`overload` in the spectrum header. **Diversity-null UI**
+     (right-click a waterfall signal → "Null this source" / "Clear null"): auto-
+     sizes the target band from the spectrum (−10 dB width), shades the nulled
+     band on the waterfall, polls `get_status` to animate `null_depth_db`, and
+     offers Track (freeze/thaw), a Fast/Med/Slow tracking-speed selector, and
+     amp/phase manual-trim sliders. Diversity-only (the bar disables in single).
+     Proven end-to-end on real signals (decoded FT8).
      `dotnet build` works from here (SDK installed); GUI *run* needs a desktop.
      RF gain validation is fixed (gotcha #5): `set_gain` negates+clamps and
      snaps RF to valid LNA steps; status reports `lna_state` + valid ranges.
-   - **NEXT:** add mode+gain controls to the client (status now exposes
-     `rf_gr_db_range`/`if_gr_db_range`/`lna_state` for the UI); CAT/rig control
-     (e.g. Hamlib rigctld) so WSJT-X logs the real freq; characterise switch
-     reliability (clean single↔diversity flips from a power-cycle); two-antenna
-     diversity-gain measurement (shack); apply the same gain-sign fix to the PoCs.
+     Overload is measured from a raw-stream peak tap (gr-sdrplay3 has no
+     overload message port; fc32 full scale = ADC full scale).
+   - **NEXT:** CAT/rig control (e.g. Hamlib rigctld) so WSJT-X logs the real
+     freq; characterise switch reliability (clean single↔diversity flips from a
+     power-cycle); two-antenna diversity-gain measurement (shack); apply the
+     same gain-sign fix to the PoCs. (Done: audio-device selector, RF/IF gain
+     fix, client gain + tuner-mode controls, overload metering, server-side
+     targeted diversity null + client right-click null UI.)
 
 Other reliable PoCs: `multi_vrx.py` (multiple in-band VRXs, single tuner),
 `mode_switch.py` (HAL: single/diversity/independent source factory).
@@ -80,7 +106,9 @@ for Stage 4+. Commit both `.grc` and generated `.py`.
 - Client GUI (desktop only): `dotnet run --project client\HfSdr.App` — Connect,
   click the waterfall to tune, wheel to fine-tune.
 - Control CLI: `python server\python\headless\ctl.py get_status` |
-  `... ctl.py set_tuner_mode mode=diversity` | `... ctl.py set_gain rf_gr_db=0`
+  `... ctl.py set_tuner_mode mode=diversity` | `... ctl.py set_gain rf_gr_db=0` |
+  `... ctl.py null_signal center_hz=14005000 width_hz=12000` (diversity: null a
+  source; watch `null_depth_db` climb) | `... ctl.py null_signal clear=true`
 - Any PoC: `C:\Users\MABY\radioconda\python.exe server\python\poc\<script>.py --help`
 - DSP without hardware: run `test_combiner.py`. `dotnet build client\HfSdr.App`
   compiles the client here. Hardware tests via Claude Code need `dangerouslyDisableSandbox: true`.

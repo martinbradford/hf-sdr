@@ -95,7 +95,7 @@ Every reply:
 | `set_center_freq` | `{ "hz": <int>, "tuner": <0\|1> }` | `tuner` required only in `independent` mode; ignored/locked otherwise. |
 | `set_sample_rate` | `{ "hz": <int> }` | Capture width. Dual-tuner modes are fixed at 2 000 000. |
 | `set_bandwidth` | `{ "hz": <int> }` | IF bandwidth. |
-| `set_gain` | `{ "agc": <bool>, "if_gr_db": <int>, "rf_gr_db": <int>, "agc_setpoint_dbfs": <int>, "tuner": <0\|1> }` | Gains are **gain reduction** in dB, given as **positive** values (higher = less gain). Both are clamped to the live valid range (see `*_range` in status). `rf_gr_db` snaps to the nearest discrete **LNA step** for the current band (on HF: `{0,6,12,18,37,42,61}` dB / states 0–6); the reply/status echo the actual applied value + resulting `lna_state`. `if_gr_db` used only when `agc=false`. `tuner` only meaningful in `independent`. |
+| `set_gain` | `{ "agc": <bool>, "if_gr_db": <int>, "rf_gr_db": <int>, "agc_setpoint_dbfs": <int>, "tuner": <0\|1> }` | Gains are **gain reduction** in dB, given as **positive** values (higher = less gain). Both are clamped to the live valid range (see `*_range` in status). `rf_gr_db` snaps to the nearest discrete **LNA step** for the current band (on HF: `{0,6,12,18,37,42,61}` dB / states 0–6); the reply/status echo the actual applied value + resulting `lna_state`. The full discrete step list is reported as `rf_gr_db_steps` (see status §4.7) so the client can offer one detent per step rather than a coarse continuous slider. `if_gr_db` used only when `agc=false`. `tuner` only meaningful in `independent`. |
 
 ### 4.4 VRX (virtual receivers)
 
@@ -120,8 +120,9 @@ mode-appropriate default. Audio for the VRX is published on `audio/<vrx_id>`.
 | cmd | params | notes |
 |-----|--------|-------|
 | `set_combiner` | `{ "type": "mrc"\|"egc", "auto": <bool>, "phase_deg": <float>, "amp": <float>, "phase_lock": <bool>, "amp_lock": <bool> }` | `diversity` mode only. `auto=true` → adaptive alignment; manual `phase_deg`/`amp` used when locked (mirrors SDRConnect's diversity panel). |
+| `null_signal` | `{ "center_hz": <int>, "width_hz": <int>, "track": <bool>, "track_speed": "fast"\|"med"\|"slow", "amp": <float>, "phase_deg": <float>, "clear": <bool> }` | `diversity` mode only (else `wrong_mode`). **Targeted interference canceller.** `center_hz` engages/retargets a null on the source at that frequency; the server band-isolates both branches around it (`width_hz`, default 12 000, clamped 1 000–40 000) and estimates the cancelling weight `w = h0/h1` there, then applies `y = x0 − w·x1` across the whole capture. `track` (default `true`) keeps re-estimating so the null follows drift; `track:false` freezes it. `track_speed` sets the adaptation time constant (default `med`) — use `slow` for a fading skywave source to steady the weight. `amp`/`phase_deg` set the weight manually (fine-trim; switches off tracking). `clear:true` disengages. Reply = the combiner null object below. |
 
-Live correction estimate (|g|, phase) is reported via `telemetry` (§6.3).
+Combiner state is reported in `get_status` (§4.7) under `combiner`: MRC → `{ "type":"mrc", "auto":true, "amp", "phase_deg" }`; null → `{ "type":"null", "active", "track", "manual", "amp", "phase_deg", "null_depth_db", "track_speed", "center_hz", "width_hz" }`. `null_depth_db` is the measured cancellation in the target band. The estimator is fade-robust: during a deep fade of the target on branch B it holds the last weight (rather than dividing into the noise), regularises the denominator, and caps `|w|`. Live correction estimate is also reported via `telemetry` (§6.3).
 
 ### 4.6 Spectrum & streaming
 
@@ -140,7 +141,8 @@ Live correction estimate (|g|, phase) is reported via `telemetry` (§6.3).
   "device": { "name": "RSPduo", "serial": "2305039434" },
   "capture": { "center_hz": 7150000, "sample_rate_hz": 2000000, "bandwidth_hz": 1536000 },
   "gain": { "agc": true, "if_gr_db": 40, "rf_gr_db": 37, "agc_setpoint_dbfs": -30,
-            "lna_state": 4, "rf_gr_db_range": [0, 61], "if_gr_db_range": [20, 59] },
+            "lna_state": 4, "rf_gr_db_range": [0, 61], "if_gr_db_range": [20, 59],
+            "rf_gr_db_steps": [0, 6, 12, 18, 37, 42, 61] },
   "combiner": { "type": "mrc", "auto": true, "amp": 1.31, "phase_deg": 148.4 },
   "vrx": [
     { "vrx_id": 1, "freq_hz": 7150000, "mode": "lsb",
@@ -161,7 +163,7 @@ Live correction estimate (|g|, phase) is reported via `telemetry` (§6.3).
   "sample_rates_hz": [2000000],
   "audio_rate_hz": 48000,
   "audio_formats": ["int16", "f32"],
-  "features": ["diversity", "multi_vrx", "noise_blanker", "notch"]
+  "features": ["diversity", "diversity_null", "multi_vrx", "noise_blanker", "notch"]
 }
 ```
 
