@@ -86,10 +86,12 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
      snaps RF to valid LNA steps; status reports `lna_state` + valid ranges.
      Overload is measured from a raw-stream peak tap (gr-sdrplay3 has no
      overload message port; fc32 full scale = ADC full scale).
-   - **NEXT:** CAT/rig control (e.g. Hamlib rigctld) so WSJT-X logs the real
-     freq; characterise switch reliability (clean single↔diversity flips from a
-     power-cycle); two-antenna diversity-gain measurement (shack); apply the
-     same gain-sign fix to the PoCs. (Done: audio-device selector, RF/IF gain
+   - **NEXT:** the **101Cats integration is the priority** — see *Product direction*
+     below and [`protocol/integration_design.md`](protocol/integration_design.md).
+     Also: productionise the client (MVVM refactor, single-VRX → multi-VRX,
+     persistence); characterise switch reliability (clean single↔diversity flips
+     from a power-cycle); two-antenna diversity-gain measurement (shack); apply
+     the same gain-sign fix to the PoCs. (Done: audio-device selector, RF/IF gain
      fix, client gain + tuner-mode controls, overload metering, server-side
      targeted diversity null + client right-click null UI.)
 
@@ -112,6 +114,33 @@ for Stage 4+. Commit both `.grc` and generated `.py`.
 - Any PoC: `C:\Users\MABY\radioconda\python.exe server\python\poc\<script>.py --help`
 - DSP without hardware: run `test_combiner.py`. `dotnet build client\HfSdr.App`
   compiles the client here. Hardware tests via Claude Code need `dangerouslyDisableSandbox: true`.
+
+## Product direction & 101Cats integration
+
+The end goal is a **personal replacement for SDRPlay's SDRConnect** that meets the
+owner's needs, with **tight integration to 101Cats** (his Yaesu FTdx101D CAT
+controller at `D:\RiderProjects\Avalonia101Cats`) so the SDR + transceiver feel
+like *one* operating environment. Operating reality: the RSP Duo is often the
+**primary receiver** (101D receiver off, 101D used for TX); it has a flat response
+good for FT8. Decision: **two separate, closely-integrated apps** — do NOT merge
+the SDR into 101Cats (would bloat it for the many 101Cats users with no RSP).
+
+Client strategy: **evolve** the Avalonia client (MVVM refactor, multi-VRX,
+persistence), don't rewrite — the real architecture is the server/ZMQ split and
+the client is a thin, replaceable view.
+
+**Integration mechanism — over ZeroMQ, not CAT-over-COM.** 101Cats becomes a
+second ZMQ peer of the SDR server. Design note: [`protocol/integration_design.md`](protocol/integration_design.md);
+background + SDRPlay's own mechanisms & SDR Uno quirks: [`Integration.MD`](Integration.MD).
+Core model: **the SDR is the VFO; the 101D follows.** One **rig-linked VRX** at a
+time (others are free monitors); default direction **rig-follows-SDR** via a pushed
+`linked_tuned` event (no polling); "park on a DX" = unlink; TX-aware mute; single
+operating VFO. Needs a control-channel `ROUTER` upgrade (GUI + 101Cats = two
+clients). SDRConnect's WebSocket property API is a *separate, optional*
+compatibility surface for other tools — not the 101Cats path.
+
+**IMPORTANT:** the 101Cats source tree is currently **destabilised** — do NOT edit
+it without first checking it is healthy. Read-only reference is fine.
 
 ## Conventions
 
