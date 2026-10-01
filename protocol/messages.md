@@ -253,5 +253,7 @@ Errors never crash the session; the client may retry or re-`get_status`.
 
 - Protobuf encoding for control + headers (shapes above map directly).
 - Multiple/async clients via `ROUTER`/`DEALER` (drop the REQ/REP alternation).
+- `shutdown` command, so the client can own the server's lifetime as a child process —
+  see [`server_lifecycle.md`](server_lifecycle.md).
 - Auth/TLS (`CURVE`) if exposed beyond localhost.
 - IQ recording / playback control; frequency memories; scanning.

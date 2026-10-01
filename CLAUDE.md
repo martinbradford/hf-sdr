@@ -48,6 +48,8 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
    unreliable (gotcha #3) — real combining-gain measurement is a shack task.
 4. **ZMQ / headless server + client** — WORKING END TO END.
    - Contract: [`protocol/messages.md`](protocol/messages.md) v0.1.
+     Server lifecycle (client spawns + supervises the server; why *not* to embed it):
+     [`protocol/server_lifecycle.md`](protocol/server_lifecycle.md).
    - Server: `server/python/headless/server.py` — capture + spectrum + multi-VRX
      audio over ZMQ; dynamic VRX via lock()/unlock(); **live tuner-mode switching
      single↔diversity over the control channel** (`set_tuner_mode`; see gotcha #3).
