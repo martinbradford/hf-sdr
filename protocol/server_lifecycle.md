@@ -14,7 +14,9 @@ assumes it is already listening. That is fine for development and unacceptable f
 **Decision: the client spawns and supervises the server as a child process.** It does *not*
 host the GNU Radio flowgraph in-process.
 
-## 2. Why not genuinely embed the server
+## 2. Rejected alternatives
+
+### 2.1 Embedding the flowgraph in-process (CPython hosted in .NET)
 
 Hosting CPython inside the .NET client (Python.NET or a custom host) was considered and
 rejected. The objections are concrete, not stylistic:
@@ -44,6 +46,79 @@ rejected. The objections are concrete, not stylistic:
 Precedent: **SDRConnect itself is a separate server process with a client front end** — the
 product we are replacing already demonstrates that the unified feel is a packaging and
 lifecycle problem, not a process-count problem.
+
+### 2.2 GNU Radio ControlPort / Thrift RPC
+
+GNU Radio does ship **ControlPort**, an RPC layer with Apache Thrift as its backend, and the
+hope was that C# could drive the flowgraph through it directly with no Python in the mix. It
+does not work, for three independent reasons — any one of them sufficient.
+
+**(a) The component is enabled here; the transport is not.** This is the likely source of the
+claim: `gnuradio-config-info --enabled-components` *does* list `gr-ctrlport`. That is the
+registration machinery, not a working RPC server. Verified on this machine (GNU Radio 3.10.12,
+radioconda, `gnuradio-sdrplay3` 3.11.0.8):
+
+| Check | Result |
+|-------|--------|
+| `gr-ctrlport` in enabled components | present |
+| `from gnuradio import ctrlport` | imports |
+| `import thrift` (Python package) | **ModuleNotFoundError** |
+| `gnuradio.ctrlport.GNURadio` (generated Thrift stubs) | **ImportError** |
+| any `*.thrift` IDL or `thrift*.dll` on disk | **nothing** |
+| `[ControlPort] on =` in `gnuradio-runtime.conf` | `False` |
+
+Obtaining a transport means rebuilding GNU Radio from source with Thrift enabled, on Windows,
+inside a conda environment — and `gnuradio-sdrplay3` is a **prebuilt binary** from fventuri's
+releases pinned to this ABI, so it likely has to be rebuilt too. A large and permanent
+maintenance burden before any C# is written.
+
+**(b) ControlPort cannot configure a flowgraph — the fatal objection.** It is a knob and
+telemetry interface onto an **already-constructed, already-running** flowgraph; the Thrift
+service is essentially `getKnobs` / `setKnobs` / `properties`. There is no API to create a
+block, connect blocks, or alter topology. Nearly everything this server does is construction or
+server-side logic, not parameter setting:
+
+| Operation | What it actually is |
+|-----------|---------------------|
+| `add_vrx` / `remove_vrx` | builds and connects a demod chain — topology |
+| `set_tuner_mode` | tears down and rebuilds the whole flowgraph |
+| `null_signal` | installs a canceller and computes its weights |
+| `configure_spectrum` | reconfigures the FFT path |
+| `set_gain` | sign negation + LNA-step clamping (gotchas #2, #5) |
+
+And something must still *build and run* the flowgraph. ControlPort does not remove Python — it
+adds a second control channel into the running Python process. The premise does not hold.
+
+**(c) gr-sdrplay3 registers no knobs anyway.** Blocks appear on ControlPort only if they
+register them in `setup_rpc()`. Checking which libraries import the registration API:
+
+| Library | imports `rpcbasic_register_set`? |
+|---------|--------------------------------|
+| `gnuradio-blocks.dll` | yes — registers knobs |
+| `gnuradio-analog.dll` | yes — registers knobs |
+| **`gnuradio-sdrplay3.dll`** | **no** — none of the registration API |
+
+The in-tree libraries importing it confirms the check is sound; gr-sdrplay3 inherits the empty
+default from `basic_block`. So even a working Thrift server would expose a flowgraph with **no
+way to tune it** — not even frequency or gain.
+
+**Conclusion: ControlPort/Thrift is a dead end for this project.** Not "needs work" — wrong tool.
+
+### 2.3 Rewriting the server in C++ — deferred, not rejected
+
+If the goal is genuinely *no Python in the shipped product*, the honest route is a C++ flowgraph:
+GNU Radio **is** a C++ library, and gr-sdrplay3 ships `gnuradio-sdrplay3.lib` plus headers, so
+the C++ API is available. That yields a native server executable and would genuinely solve the
+packaging blocker in §7 — the real obstacle to a public release.
+
+The cost is why it is deferred rather than adopted: it is a rewrite of the whole server,
+including the diversity combiner and the fade-robust null canceller — the hardest-won,
+hardware-validated DSP in the project — plus a C++ toolchain and GNU Radio dev headers on
+Windows. And it still leaves a separate process unless the client P/Invokes into it, which
+reintroduces §2.1's shared-fate crash problem in C++ instead of Python.
+
+Revisit it as a deliberate port of a stable, feature-complete server, driven by packaging —
+never as a way to avoid spawning a child process.
 
 ## 3. Architecture
 

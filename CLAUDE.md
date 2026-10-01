@@ -48,7 +48,9 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
    unreliable (gotcha #3) — real combining-gain measurement is a shack task.
 4. **ZMQ / headless server + client** — WORKING END TO END.
    - Contract: [`protocol/messages.md`](protocol/messages.md) v0.1.
-     Server lifecycle (client spawns + supervises the server; why *not* to embed it):
+     Server lifecycle (client spawns + supervises the server; why *not* to embed it,
+     and why **ControlPort/Thrift is a dead end** — no Thrift backend in radioconda,
+     can't build a flowgraph, gr-sdrplay3 registers no knobs):
      [`protocol/server_lifecycle.md`](protocol/server_lifecycle.md).
    - Server: `server/python/headless/server.py` — capture + spectrum + multi-VRX
      audio over ZMQ; dynamic VRX via lock()/unlock(); **live tuner-mode switching
