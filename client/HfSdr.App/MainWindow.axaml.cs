@@ -472,9 +472,19 @@ public partial class MainWindow : Window
         finally { _pumping = false; }
     }
 
+    /// <summary>Feed the ruler above the waterfall the current display window
+    /// (it shares the waterfall's Hz→x mapping) plus the tuned frequency.</summary>
+    private void UpdateScale()
+    {
+        FreqScale.CenterHz = _dispCenter;
+        FreqScale.SpanHz = _dispSpan;
+        FreqScale.MarkerHz = _vrxId is null ? null : _vrxFreq;
+    }
+
     /// <summary>Position the tuned-frequency marker line over the waterfall.</summary>
     private void UpdateMarker()
     {
+        UpdateScale();
         double w = Waterfall.Bounds.Width, h = Waterfall.Bounds.Height;
         if (_vrxId is null || _dispSpan <= 0 || w <= 0)
         {

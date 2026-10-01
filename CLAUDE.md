@@ -65,7 +65,10 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
      Offline proof: `test_null.py` (no hardware — 58 dB cancel on a stable
      source, wanted signal untouched; plus a fading case that stays bounded).
      `ctl.py` = tiny control CLI; `example_client.py` = smoke test.
-   - Client: `client/HfSdr.App` (Avalonia 12 / .NET 10) — waterfall, **click-to-tune
+   - Client: `client/HfSdr.App` (Avalonia 12 / .NET 10) — waterfall with a
+     **frequency scale** across the top (`FrequencyScale.cs`: 1/2/5 × 10ⁿ tick
+     step auto-chosen from the live span, minor ticks, MHz labels, yellow caret
+     at the tuned VRX; shares the waterfall's Hz→x mapping), **click-to-tune
      + mouse-wheel fine tuning** (50 Hz / Ctrl 10 Hz / Shift 500 Hz), LSB/USB,
      int16 audio via NAudio. **Audio-output device selector** (WASAPI
      `WasapiOut` — full endpoint names, e.g. a VB-Audio virtual cable to route

@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:app="clr-namespace:HfSdr.App"
         x:Class="HfSdr.App.MainWindow"
         Width="920" Height="620"
         Title="HF SDR — Client (architecture proof)">
@@ -79,21 +80,24 @@
                Text="Disconnected — start the server, then Connect." Opacity="0.8"/>
 
     <Border BorderBrush="#333" BorderThickness="1">
-      <Grid>
-        <Image x:Name="Waterfall" Stretch="Fill"
-               PointerPressed="OnWaterfallClick" PointerWheelChanged="OnWaterfallWheel">
-          <Image.ContextMenu>
-            <ContextMenu Placement="Pointer">
-              <MenuItem Header="Null this source" Click="OnNullThis"/>
-              <MenuItem Header="Clear null" Click="OnClearNull"/>
-            </ContextMenu>
-          </Image.ContextMenu>
-        </Image>
-        <Canvas x:Name="Overlay" IsHitTestVisible="False">
-          <Rectangle x:Name="NullMarker" Fill="#55F44336" IsVisible="False"/>
-          <Rectangle x:Name="Marker" Width="2" Fill="#FFEB3B" IsVisible="False"/>
-        </Canvas>
-      </Grid>
+      <DockPanel>
+        <app:FrequencyScale x:Name="FreqScale" DockPanel.Dock="Top" Height="26"/>
+        <Grid>
+          <Image x:Name="Waterfall" Stretch="Fill"
+                 PointerPressed="OnWaterfallClick" PointerWheelChanged="OnWaterfallWheel">
+            <Image.ContextMenu>
+              <ContextMenu Placement="Pointer">
+                <MenuItem Header="Null this source" Click="OnNullThis"/>
+                <MenuItem Header="Clear null" Click="OnClearNull"/>
+              </ContextMenu>
+            </Image.ContextMenu>
+          </Image>
+          <Canvas x:Name="Overlay" IsHitTestVisible="False">
+            <Rectangle x:Name="NullMarker" Fill="#55F44336" IsVisible="False"/>
+            <Rectangle x:Name="Marker" Width="2" Fill="#FFEB3B" IsVisible="False"/>
+          </Canvas>
+        </Grid>
+      </DockPanel>
     </Border>
   </DockPanel>
 </Window>
