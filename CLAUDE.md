@@ -111,7 +111,7 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
        state machine, Job Object, graceful stop via `shutdown`, `status`/`start`/`stop` on :5554. Real RSP under LocalSystem works (§12.6 passed — no account change needed);
        10/10 `start`/`stop` cycles in single and 10/10 in diversity; `Stop-Service` with the server running shuts it down gracefully and the RSP re-opens cleanly.
        Install: `dotnet publish supervisor\HfSdr.Supervisor -c Release -o C:\ProgramData\hf-sdr\supervisor` then `New-Service` (see `supervisor/README.md`); republishing needs the service stopped (admin).
-       Gotchas hit: `supervisor.json` paths must use `/` (or `\`) — bare backslashes are invalid JSON and the service dies at startup.
+       Gotchas hit: `supervisor.json` paths must use `/` (or doubled `\\`) — bare backslashes are invalid JSON and the service dies at startup.
        **Still TODO (§12.9, at the machine):** SDRConnect opens the RSP right after `stop`; reboot with nobody logged in → reachable on 5554; start while SDRConnect holds the RSP → `failed` with real `log_tail`; firewall scope 5554–5557 (home + VPN subnets only).
      - **Not started:** §4.3 client throwaway-socket probe (`SdrClient.cs`), §4.4 client-side Job
        Object, client `supervisor` launch mode.
