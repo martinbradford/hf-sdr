@@ -1,0 +1,16 @@
+{
+  "Supervisor": {
+    "PythonExe": "C:\Users\MABY\radioconda\python.exe",
+    "ServerScript": "D:\Repos\HF-SDR\server\python\headless\server.py",
+    "ListenAddress": "*",
+    "Port": 5554,
+    "ServerBind": "*",
+    "ControlPort": 5555,
+    "StreamPort": 5556,
+    "AudioPort": 5557,
+    "DefaultCenterHz": 7150000,
+    "StartTimeoutSec": 20,
+    "ModeSwitchTimeoutSec": 60,
+    "GracefulStopSec": 5
+  }
+}

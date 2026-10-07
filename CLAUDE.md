@@ -107,8 +107,9 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
        re-opened the RSP cleanly on every repeat, in both **single** and **diversity**
        (switched with `set_tuner_mode mode=diversity` before each shutdown). Use a
        non-numeric, non-bool token because `ctl.py` JSON-parses values. (§12.9 criteria met.)
-     - **Not started:** §4.3 client throwaway-socket probe (`SdrClient.cs`), §4.4 Job
-       Object, the supervisor service (`supervisor/`), client `supervisor` launch mode.
+     - **Supervisor service written (`supervisor/`):** state machine, Job Object, graceful stop via `shutdown`, `status`/`start`/`stop` on :5554; tested offline vs a fake server (validation, diversity apply, graceful stop, child killed with supervisor, failure + log_tail). TODO: run vs real server+RSP, install as service (LocalSystem check §12.6), §12.9 criteria.
+     - **Not started:** §4.3 client throwaway-socket probe (`SdrClient.cs`), §4.4 client-side Job
+       Object, client `supervisor` launch mode.
      - Open check for the service: run as LocalSystem first (§12.6) — verify it can read
        radioconda and import `gnuradio.sdrplay3`; else log on as the owner's account.
    - **NEXT:** the **101Cats integration is the priority** — see *Product direction*

@@ -323,7 +323,7 @@ Criteria 4 and 5 are the ones that catch the wedged-device class of bug; they ne
 
 ## 12. Remote launch: the supervisor service (twin-PC)
 
-**Status:** design only, nothing implemented. Builds on §4.1 and §4.2, which remain blockers.
+**Status:** supervisor service implemented in `supervisor/` (offline-tested against a fake server; not yet run against the real server/RSP or installed as a service). Builds on §4.1 and §4.2, which remain blockers.
 
 ### 12.1 Problem
 
