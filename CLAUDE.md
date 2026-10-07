@@ -93,6 +93,25 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
      snaps RF to valid LNA steps; status reports `lna_state` + valid ranges.
      Overload is measured from a raw-stream peak tap (gr-sdrplay3 has no
      overload message port; fc32 full scale = ADC full scale).
+   - **IN PROGRESS — twin-PC operation (client and RSP on different PCs).** Design:
+     [`protocol/server_lifecycle.md`](protocol/server_lifecycle.md) **§12**. Plan: a tiny
+     always-on **supervisor Windows service** (.NET Worker Service, port 5554,
+     `status`/`start`/`stop`) that launches/stops the Python server on demand — the
+     *server* is deliberately NOT a service (it would hold the RSP). Home LAN + VPN only.
+     - **Done (commit `acc5421`, code + offline test only, NOT yet validated on hardware):**
+       server `shutdown` command (`--shutdown-token` / `HF_SDR_SHUTDOWN_TOKEN`), all three
+       sockets bound before capture starts (port clash → exit 2), `--bind` (default `*`).
+       Offline test: `server/python/headless/test_lifecycle.py` (stubs GNU Radio if absent).
+     - **Shack-PC validation TODO:** (1) run `test_lifecycle.py` with radioconda Python;
+       (2) second server instance must exit 2 immediately, first unaffected;
+       (3) start with `--shutdown-token test`, `ctl.py shutdown token=test`, then restart at
+       once — the RSP must re-open cleanly (this is the real device-deinit check; use a
+       non-numeric, non-bool token because `ctl.py` JSON-parses values); (4) repeat ~10×
+       in single and diversity (acceptance criteria in §12.9).
+     - **Not started:** §4.3 client throwaway-socket probe (`SdrClient.cs`), §4.4 Job
+       Object, the supervisor service (`supervisor/`), client `supervisor` launch mode.
+     - Open check for the service: run as LocalSystem first (§12.6) — verify it can read
+       radioconda and import `gnuradio.sdrplay3`; else log on as the owner's account.
    - **NEXT:** the **101Cats integration is the priority** — see *Product direction*
      below and [`protocol/integration_design.md`](protocol/integration_design.md).
      Also: productionise the client (MVVM refactor, single-VRX → multi-VRX,
