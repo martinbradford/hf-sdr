@@ -20,6 +20,7 @@ public record SpectrumFrame(int FftSize, long CenterHz, long SpanHz, float[] Mag
 public sealed class SdrClient : IDisposable
 {
     private RequestSocket? _control;
+    private string? _controlEndpoint;
     private SubscriberSocket? _spectrum;
     private SubscriberSocket? _audio;
     private NetMQPoller? _poller;
@@ -31,8 +32,8 @@ public sealed class SdrClient : IDisposable
 
     public void Connect(string host = "localhost", int controlPort = 5555, int streamPort = 5556, int audioPort = 5557)
     {
-        _control = new RequestSocket();
-        _control.Connect($"tcp://{host}:{controlPort}");
+        _controlEndpoint = $"tcp://{host}:{controlPort}";
+        _control = NewControlSocket();
 
         _spectrum = new SubscriberSocket();
         _spectrum.Connect($"tcp://{host}:{streamPort}");
@@ -60,7 +61,15 @@ public sealed class SdrClient : IDisposable
             _control.SendFrame(JsonSerializer.Serialize(req));
 
             if (!_control.TryReceiveFrameString(TimeSpan.FromMilliseconds(timeoutMs), out var reply) || reply is null)
+            {
+                // Lazy pirate: a REQ socket that sent without receiving is wedged (strict send/recv
+                // alternation) and would throw on every later request. Replace it so the session
+                // survives one lost reply. The request is NOT retried: it may have been applied
+                // (add_vrx, set_tuner_mode, ...), so the caller decides.
+                _control.Dispose();
+                _control = NewControlSocket();
                 throw new TimeoutException($"no reply to '{cmd}'");
+            }
 
             using var doc = JsonDocument.Parse(reply);
             var root = doc.RootElement;
@@ -72,6 +81,14 @@ public sealed class SdrClient : IDisposable
             }
             return root.TryGetProperty("result", out var res) ? res.Clone() : default;
         }
+    }
+
+    private RequestSocket NewControlSocket()
+    {
+        var s = new RequestSocket();
+        s.Options.Linger = TimeSpan.Zero;          // don't hold the process open for a dead request
+        s.Connect(_controlEndpoint!);
+        return s;
     }
 
     private void OnSpectrum(object? sender, NetMQSocketEventArgs e)
