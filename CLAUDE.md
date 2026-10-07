@@ -98,16 +98,15 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
      always-on **supervisor Windows service** (.NET Worker Service, port 5554,
      `status`/`start`/`stop`) that launches/stops the Python server on demand — the
      *server* is deliberately NOT a service (it would hold the RSP). Home LAN + VPN only.
-     - **Done (commit `acc5421`, code + offline test only, NOT yet validated on hardware):**
+     - **Done & validated on the Shack PC (code in commit `acc5421`):**
        server `shutdown` command (`--shutdown-token` / `HF_SDR_SHUTDOWN_TOKEN`), all three
        sockets bound before capture starts (port clash → exit 2), `--bind` (default `*`).
-       Offline test: `server/python/headless/test_lifecycle.py` (stubs GNU Radio if absent).
-     - **Shack-PC validation TODO:** (1) run `test_lifecycle.py` with radioconda Python;
-       (2) second server instance must exit 2 immediately, first unaffected;
-       (3) start with `--shutdown-token test`, `ctl.py shutdown token=test`, then restart at
-       once — the RSP must re-open cleanly (this is the real device-deinit check; use a
-       non-numeric, non-bool token because `ctl.py` JSON-parses values); (4) repeat ~10×
-       in single and diversity (acceptance criteria in §12.9).
+       Offline test: `server/python/headless/test_lifecycle.py` (stubs GNU Radio if absent) —
+       ALL PASS. Hardware: a second instance exits immediately on the port clash with the
+       first unaffected; `ctl.py shutdown token=test` → `stopping: true`; immediate restart
+       re-opened the RSP cleanly on every repeat, in both **single** and **diversity**
+       (switched with `set_tuner_mode mode=diversity` before each shutdown). Use a
+       non-numeric, non-bool token because `ctl.py` JSON-parses values. (§12.9 criteria met.)
      - **Not started:** §4.3 client throwaway-socket probe (`SdrClient.cs`), §4.4 Job
        Object, the supervisor service (`supervisor/`), client `supervisor` launch mode.
      - Open check for the service: run as LocalSystem first (§12.6) — verify it can read
