@@ -93,7 +93,7 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
      snaps RF to valid LNA steps; status reports `lna_state` + valid ranges.
      Overload is measured from a raw-stream peak tap (gr-sdrplay3 has no
      overload message port; fc32 full scale = ADC full scale).
-   - **IN PROGRESS — twin-PC operation (client and RSP on different PCs).** Design:
+   - **WORKING — twin-PC operation (client and RSP on different PCs); formal §12.9 tests still to run.** Proven 2026-10-07: laptop client → `new-shack-pc.local` supervisor → live waterfall + audio. Design:
      [`protocol/server_lifecycle.md`](protocol/server_lifecycle.md) **§12**. Plan: a tiny
      always-on **supervisor Windows service** (.NET Worker Service, port 5554,
      `status`/`start`/`stop`) that launches/stops the Python server on demand — the
@@ -174,6 +174,14 @@ compatibility surface for other tools — not the 101Cats path.
 
 **IMPORTANT:** the 101Cats source tree is currently **destabilised** — do NOT edit
 it without first checking it is healthy. Read-only reference is fine.
+
+## Working from another PC (laptop)
+
+Client-only work (Avalonia/.NET) can be done on any PC with the .NET 10 SDK: `dotnet build client\HfSdr.App`. The server, supervisor and RSP live on the Shack PC
+(`new-shack-pc.local`; supervisor service `HfSdrSupervisor` on :5554 is always on). To run the client against it: `dotnet run --project client\HfSdr.App`, set Host to
+`new-shack-pc.local`, tick "Start via supervisor", Connect. Settings persist in `%APPDATA%\HfSdr\settings.json`. Hardware/server paths in the rest of this file (radioconda,
+`D:\Repos\HF-SDR`) refer to the Shack PC. Supervisor test helpers: `supervisor/tools/` (set `HF_SDR_HOST`). Pending: Martin's client-enhancements list (an MD file in the repo).
+Server supports several simultaneous clients only loosely (shared state, no ownership, client plays all `audio/` topics) — see the ROUTER upgrade in `protocol/integration_design.md`.
 
 ## Conventions
 
