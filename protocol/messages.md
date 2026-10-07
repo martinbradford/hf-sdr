@@ -86,6 +86,7 @@ Every reply:
 | `hello` | `protocol_version`, `client` | `protocol_version`, `server` |
 | `get_status` | – | full state snapshot (§4.7) |
 | `get_capabilities` | – | supported modes/features (§4.8) |
+| `shutdown` | `{ "token": <str> }` | Reply `{ "stopping": true }` is sent **before** teardown; the server then exits through the normal device-deinit path. Refused with `bad_request` unless the server was started with `--shutdown-token` (or env `HF_SDR_SHUTDOWN_TOKEN`) and `token` matches — so only the launching process can stop it. See `server_lifecycle.md` §4.1. |
 
 ### 4.3 Tuner & device
 

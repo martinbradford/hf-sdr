@@ -20,7 +20,9 @@ two-capture-window VRX model; those commands return `unsupported` for now.
 
 import argparse
 import gc
+import hmac
 import json
+import os
 import queue
 import signal
 import sys
@@ -77,14 +79,26 @@ class ProtoError(Exception):
         self.code, self.message = code, message
 
 
+def bind_or_exit(sock, host, port, name):
+    """Bind `sock` to tcp://host:port, or exit non-zero with a message naming the
+    port. A failed bind must be fatal: a server that streams but cannot be
+    controlled (or vice versa) is worse than none, esp. when launched hidden."""
+    try:
+        sock.bind(f"tcp://{host}:{port}")
+    except zmq.ZMQError as e:
+        print(f"hf-sdr-server: cannot bind {name} port {host}:{port} ({e}). "
+              f"Is another server already running?", file=sys.stderr, flush=True)
+        sys.exit(2)
+
+
 # --------------------------------------------------------------------------
 # Publisher: one thread owns the PUB sockets (zmq sockets are not thread-safe,
 # and many GNU Radio work() threads feed them). Sinks enqueue; this drains.
 # --------------------------------------------------------------------------
 class Publisher:
-    def __init__(self, ctx, stream_port, audio_port):
-        self._stream = ctx.socket(zmq.PUB); self._stream.bind(f"tcp://*:{stream_port}")
-        self._audio = ctx.socket(zmq.PUB); self._audio.bind(f"tcp://*:{audio_port}")
+    def __init__(self, ctx, host, stream_port, audio_port):
+        self._stream = ctx.socket(zmq.PUB); bind_or_exit(self._stream, host, stream_port, "stream")
+        self._audio = ctx.socket(zmq.PUB); bind_or_exit(self._audio, host, audio_port, "audio")
         self._q = queue.Queue(maxsize=512)
         self._run = True
         threading.Thread(target=self._loop, daemon=True).start()
@@ -652,16 +666,27 @@ class SdrServer(gr.top_block):
 # --------------------------------------------------------------------------
 # Control server (REQ/REP)
 # --------------------------------------------------------------------------
-def control_loop(ctx, port, srv, stop_evt):
-    sock = ctx.socket(zmq.REP)
-    sock.bind(f"tcp://*:{port}")
+def control_loop(sock, srv, stop_evt, shutdown_token=None):
+    """Serve the control channel on an already-bound REP socket (bound by main()
+    before capture starts, so a port clash is fatal rather than a zombie)."""
     poller = zmq.Poller(); poller.register(sock, zmq.POLLIN)
+    stopping = False
     caps = {"tuner_modes": list(TUNER_MODES), "demod_modes": list(DEFAULT_FILTERS),
             "max_vrx": MAX_VRX, "sample_rates_hz": [SOURCE_RATE],
             "audio_rate_hz": AUDIO_RATE, "audio_formats": ["int16"],
             "features": ["multi_vrx", "diversity", "diversity_null"]}
 
     def handle(cmd, p):
+        nonlocal stopping
+        if cmd == "shutdown":
+            # Only the process that launched us (and holds the token) may stop
+            # us. A hand-started server has no token, so cannot be stopped remotely.
+            if not shutdown_token:
+                raise ProtoError("bad_request", "shutdown disabled: server has no --shutdown-token")
+            if not hmac.compare_digest(str(p.get("token", "")), shutdown_token):
+                raise ProtoError("bad_request", "bad shutdown token")
+            stopping = True          # stop_evt is set only AFTER the reply is sent
+            return {"stopping": True}
         if cmd == "hello":
             return {"protocol_version": PROTOCOL_VERSION, "server": "hf-sdr-server/0.1"}
         if cmd == "get_status":
@@ -702,6 +727,8 @@ def control_loop(ctx, port, srv, stop_evt):
             try:
                 result = handle(req.get("cmd"), req.get("params") or {})
                 sock.send_string(json.dumps({"id": rid, "ok": True, "result": result}))
+                if stopping:
+                    stop_evt.set()
             except ProtoError as e:
                 sock.send_string(json.dumps({"id": rid, "ok": False,
                                              "error": {"code": e.code, "message": e.message}}))
@@ -713,6 +740,7 @@ def control_loop(ctx, port, srv, stop_evt):
                 sock.send_string(json.dumps({"ok": False, "error": {"code": "bad_request", "message": str(e)}}))
             except zmq.ZMQError:
                 pass
+    sock.close(linger=1000)          # let the final reply (e.g. shutdown ack) flush
 
 
 def main():
@@ -721,14 +749,24 @@ def main():
     p.add_argument("--control-port", type=int, default=5555)
     p.add_argument("--stream-port", type=int, default=5556)
     p.add_argument("--audio-port", type=int, default=5557)
+    p.add_argument("--bind", default="*",
+                   help="interface to bind all three ports on (default '*' = all "
+                        "interfaces; use 127.0.0.1 for local-only)")
+    p.add_argument("--shutdown-token", default=os.environ.get("HF_SDR_SHUTDOWN_TOKEN"),
+                   help="enable the remote 'shutdown' command, gated by this token "
+                        "(or env HF_SDR_SHUTDOWN_TOKEN). Without it, shutdown is refused.")
     args = p.parse_args()
 
+    # Bind every socket BEFORE touching the hardware, so a port clash (e.g. a
+    # server already running) is a fast, loud, non-zero exit.
     ctx = zmq.Context.instance()
-    pub = Publisher(ctx, args.stream_port, args.audio_port)
+    ctrl_sock = ctx.socket(zmq.REP)
+    bind_or_exit(ctrl_sock, args.bind, args.control_port, "control")
+    pub = Publisher(ctx, args.bind, args.stream_port, args.audio_port)
     srv = SdrServer(pub, int(args.center))
     stop_evt = threading.Event()
     ctrl = threading.Thread(target=control_loop,
-                            args=(ctx, args.control_port, srv, stop_evt), daemon=True)
+                            args=(ctrl_sock, srv, stop_evt, args.shutdown_token), daemon=True)
     signal.signal(signal.SIGINT, lambda *_: stop_evt.set())
     srv.start()
     ctrl.start()
@@ -742,8 +780,9 @@ def main():
         while not stop_evt.wait(0.25):
             pass
     except KeyboardInterrupt:
-        pass
-    srv.stop(); srv.wait()
+        stop_evt.set()
+    ctrl.join(2)                     # control thread exits + flushes any shutdown ack
+    srv.stop(); srv.wait()           # device deinit path, same for Ctrl-C and 'shutdown'
 
 
 if __name__ == "__main__":

@@ -136,6 +136,12 @@ remains fully supported (§6).
 
 ## 4. Prerequisites
 
+**Implementation status:** 4.1 and 4.2 are implemented in `server.py` (`--shutdown-token`,
+`--bind`, bind-before-capture) and covered by `server/python/headless/test_lifecycle.py`
+(no hardware; stubs GNU Radio if absent). **Not yet validated on real hardware** — in
+particular that `shutdown` leaves the RSP cleanly re-openable (acceptance criterion 4).
+4.3 and 4.4 are not started.
+
 Items 4.1–4.4 are **blockers**, not polish. 4.1 and 4.2 are server-side; 4.3 and 4.4 are
 client-side.
 
@@ -238,6 +244,7 @@ Keep attach-to-existing as a first-class mode — do not replace it.
 | `auto` (default) | Probe; attach if answered, else spawn | Normal use |
 | `spawn` | Always spawn; fail if the port is taken | Clean-room testing |
 | `attach` | Never spawn; connect to `host:port` | Remote/LAN server, and debugging the server with its own console |
+| `supervisor` | Ask a remote supervisor service to start the server, then attach (§12) | Twin-PC: client and RSP on different machines |
 
 `attach` matters more than it looks during development: `dotnet run` with a hand-started server
 must not race a spawned one. That is also why §4.3 is a prerequisite rather than a nicety.
@@ -302,12 +309,164 @@ Criteria 4 and 5 are the ones that catch the wedged-device class of bug; they ne
 ## 11. Out of scope / open questions
 
 - **Multiple server instances / device selection** (more than one RSP): out of scope.
-- **Run the server as a Windows service** for a headless shack box — different owner model;
-  revisit only if wanted.
+- ~~**Run the server as a Windows service** for a headless shack box~~ — resolved in §12:
+  the *server* is not a service (that would hold the RSP permanently); a tiny *supervisor*
+  service starts and stops it on demand.
 - Should the client **restart** a server that died unexpectedly, or just report it? Leaning
   report-and-offer-Retry: silent restarts hide device problems, and an auto-restart loop against
   a wedged RSP is worse than a stopped app.
+- Supervisor open questions are listed in §12.8.
 - Does the spawned server want a **log file** (alongside piped stdout) so a user can send a
   diagnostic after the GUI has gone? Probably yes, once there are users.
 - Should `--center` and tuner mode at spawn come from **persisted client settings** rather than
   the current hardcoded default? Ties into the persistence work already on the roadmap.
+
+## 12. Remote launch: the supervisor service (twin-PC)
+
+**Status:** design only, nothing implemented. Builds on §4.1 and §4.2, which remain blockers.
+
+### 12.1 Problem
+
+§§3–8 assume the client and the RSP are on the same PC, so the client can spawn the server as a
+child. In a twin-PC deployment the server must run on the PC with the RSP attached, and the
+client on the other PC cannot spawn a process there. Starting the server by hand from a terminal
+on the shack PC is the inconvenience being removed.
+
+**Constraints (from the owner):**
+- The server must **not** run permanently or as a service itself: it claims the RSP exclusively
+  and would make it unavailable to SDRConnect/SDRuno and other applications.
+- The shack PC does not auto-login and should not need to.
+- Single user, home LAN. Remote access from outside the house goes via the owner's existing
+  **VPN** (road-warrior), never by exposing ports to the internet.
+
+### 12.2 Decision
+
+A tiny always-on **supervisor** Windows service whose only job is to start, stop and report on
+the Python server. It idles at a few MB and never touches the RSP, so the device is claimed only
+while the server child is alive.
+
+- **Implementation:** .NET Worker Service (`UseWindowsService()`), NetMQ for the control socket
+  (the client already uses NetMQ). Lives in `supervisor/` beside `server/` and `client/`.
+- **Owns the child:** it spawns `python.exe server.py` hidden, in a Job Object
+  (`KILL_ON_JOB_CLOSE`, §4.4) so a crash of the supervisor cannot leave a process holding the RSP.
+- **Reuses the server contract:** readiness is the existing stdout banner (§5); stop is the
+  `shutdown` command (§4.1). No new server protocol beyond what §4 already requires.
+- **Service, not tray app / auto-login.** A tray launcher would need auto-login (a stored
+  password and an unlocked desktop after every reboot) and is no less code. A service survives
+  reboots with nobody logged in, which is the point of a shack box you reach remotely.
+
+### 12.3 Supervisor protocol
+
+Separate REQ/REP endpoint, default port **5554** (the server keeps 5555–5557). JSON, same
+envelope conventions as [`messages.md`](messages.md), plus a reserved optional `auth` field
+(§12.5). Every command is **idempotent**.
+
+| cmd | params | result |
+|-----|--------|--------|
+| `status` | none | `{ state, pid?, uptime_s?, server_version?, ports?, last_error?, log_tail[] }` |
+| `start` | `{ center_hz?, tuner_mode? }` (whitelisted, §12.5) | `{ state }`, returned **immediately**, not when ready |
+| `stop` | none | `{ state }`, returned immediately; client polls `status` |
+
+`restart` is deliberately omitted for now (`stop` then `start`). `log_tail` is the last ~20 lines
+of the child's stdout/stderr, so the real failure reason reaches the client UI (§5): SDRPlay
+service down, device claimed by another app, `gr-sdrplay3 not found`.
+
+**States:** `stopped` → `starting` → `running` → `stopping` → `stopped`, plus `failed`
+(child exited unexpectedly or never printed the banner within the 20 s timeout; `last_error` and
+`log_tail` populated; cleared by the next `start`).
+
+- `start` while `starting`/`running`: no-op, returns current state.
+- `start` is accepted from `stopped` or `failed` only.
+- `stop` while `stopped`: no-op.
+- `running` means the **banner has been seen**, not merely that the process exists.
+- The supervisor never auto-restarts a failed server (same reasoning as §11: silent restart loops
+  against a wedged RSP are worse than a stopped app).
+
+### 12.4 Stop semantics: graceful only
+
+`Process.Kill()` skips `srv.stop(); srv.wait()` and so skips the SDRPlay device deinit, which is
+what wedges the RSP (§4.1). Therefore:
+
+1. Supervisor sends the server's `shutdown` command on loopback. The supervisor generated and
+   holds the `--shutdown-token`, so **the token never crosses the network** and no other peer
+   (101Cats included) can stop the receiver.
+2. Wait up to ~5 s for process exit.
+3. Only then terminate the process, and log that the device may need a power-cycle.
+
+The service's `OnStopping` handler (OS shutdown, `sc stop`) runs the same sequence. The default
+Windows service stop budget is finite, but the 5 s graceful window fits inside it.
+
+### 12.5 Security
+
+Deployment is home LAN plus VPN. A "start a process" port on a LAN is still worth constraining.
+
+- **No arbitrary execution.** The interpreter path and server script come from the supervisor's
+  own config file (`supervisor.json`), never from a message. `start` accepts only whitelisted,
+  validated values (`center_hz` within 0–30 MHz, `tuner_mode` in {single, diversity}). Anything
+  else returns `bad_request`. The worst a rogue LAN device can do is start or stop the receiver.
+- **Firewall scope.** Inbound rules for 5554–5557 scoped to the home subnet and the VPN subnet.
+  Never port-forwarded. The server's own sockets (5555–5557) bind **all interfaces** by default
+  (`tcp://*`), so a hand-started server is already LAN-reachable and deserves the same firewall
+  scoping. `server.py --bind <addr>` now selects the interface (`127.0.0.1` for local-only); the
+  supervisor should pass an explicit value from its config.
+- **No shared secret in v1.** Given the VPN/LAN stance it is deferred. The reserved `auth` field
+  means a shared secret (or ZMQ CURVE) can be added later without a protocol break; a supervisor
+  that has a secret configured rejects messages without it.
+
+### 12.6 Service account
+
+Run as **LocalSystem first**, so no stored password. SYSTEM can normally read the radioconda
+install and the headless server needs no desktop, sound device or Qt. Verify on the shack PC:
+
+- radioconda is readable by SYSTEM, and `import gnuradio.sdrplay3` succeeds under it;
+- no per-user state is needed (e.g. `~/.gnuradio` prefs, user-scoped conda env vars);
+- the SDRPlay API service accepts a session-0 client (it is a system service, so it should).
+
+If any fails, switch the service to log on as the owner's account (one-line change). A
+Microsoft-account login would need that account's password for the service logon; a small
+local account is less awkward.
+
+### 12.7 Client launch sequence (`supervisor` mode)
+
+Replaces steps 1–5 of §5 when the configured mode is `supervisor`:
+
+```
+  1. status on supervisor (throwaway socket, §4.3)
+       unreachable -> "Shack PC supervisor not reachable" (service down / PC off / VPN)
+       running     -> go to 4
+       stopped / failed -> continue
+  2. start { center_hz, tuner_mode }
+  3. poll status ~every 500 ms:  starting -> show progress
+       running -> continue;  failed -> show last_error + log_tail, offer Retry;  20 s -> failed
+  4. Connect() to the server at host:5555-5557 (attach, as §6)
+```
+
+On client exit the GUI **does not** send `stop` automatically in `supervisor` mode unless the
+user opted in ("release the RSP when I disconnect"): the remote machine may be serving another
+client, and the user may want the receiver left running. A "Stop receiver" action is always
+available. This differs from local `spawn` mode, where closing the GUI stops the server (§8).
+
+### 12.8 Open questions
+
+- Install story: `New-Service` script vs. an installer; startup type Automatic (Delayed) is
+  probably right.
+- Should the supervisor also expose a **device-busy hint** (is SDRConnect/SDRuno running?) so the
+  client can explain a start failure before it happens? Nice-to-have; `log_tail` covers the
+  failure after the fact.
+- Discovery: a configured host name is enough for a single shack PC; mDNS only if it grows.
+- Does local single-PC use also go through the supervisor for one code path, or keep direct
+  `spawn`? Leaning keep `spawn`: it requires no service install for anyone without a twin-PC setup.
+- Log retention: supervisor writing the child's output to a rotating file under
+  `%ProgramData%\hf-sdr\` is cheap and useful once the GUI isn't there to show it.
+
+### 12.9 Acceptance criteria
+
+1. Shack PC freshly rebooted, nobody logged in: client in `supervisor` mode reaches `status`.
+2. `start` then `running` then client attaches; RSP is claimed. `stop` releases the RSP and
+   SDRConnect can open it immediately.
+3. `stop` then `start` repeatedly (10 or more times) with no wedged device (graceful path, §12.4).
+4. `sc stop` on the supervisor while the server is running: server shuts down gracefully first.
+5. Supervisor process killed: no surviving `python.exe` (Job Object), next `start` succeeds.
+6. `start` with SDRConnect holding the RSP: `failed`, and the real error appears in the client UI.
+7. `start` with out-of-range or unknown parameters: `bad_request`, nothing spawned.
+8. Server unreachable from outside the home subnet/VPN subnet (firewall scope verified).
