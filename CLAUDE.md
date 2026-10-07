@@ -113,8 +113,10 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
        Install: `dotnet publish supervisor\HfSdr.Supervisor -c Release -o C:\ProgramData\hf-sdr\supervisor` then `New-Service` (see `supervisor/README.md`); republishing needs the service stopped (admin).
        Gotchas hit: `supervisor.json` paths must use `/` (or doubled `\\`) — bare backslashes are invalid JSON and the service dies at startup.
        **Still TODO (§12.9, at the machine):** SDRConnect opens the RSP right after `stop`; reboot with nobody logged in → reachable on 5554; start while SDRConnect holds the RSP → `failed` with real `log_tail`; firewall scope 5554–5557 (home + VPN subnets only).
-     - **Not started:** §4.3 client throwaway-socket probe (`SdrClient.cs`), §4.4 client-side Job
-       Object, client `supervisor` launch mode.
+     - **Client `supervisor` launch mode — written, builds, NOT yet exercised in the GUI:** `SupervisorClient.cs` (throwaway REQ socket per call = §4.3 for the supervisor path),
+       `ClientSettings.cs` (host / use-supervisor / release-on-close in `%APPDATA%\HfSdr\settings.json`), and `MainWindow` Host box, "Start via supervisor", "Release receiver on close"
+       (opt-in, default off), "Stop receiver" (stop + disconnect). Connect flow = §12.7: status → start{center,tuner_mode} → poll → attach using the ports the supervisor reports.
+     - **Not started:** lazy-pirate for `SdrClient.Send` (§4.3, a timed-out control request still wedges the REQ socket), §4.4 client-side Job Object (only needed for local `spawn` mode).
      - Open check for the service: run as LocalSystem first (§12.6) — verify it can read
        radioconda and import `gnuradio.sdrplay3`; else log on as the owner's account.
    - **NEXT:** the **101Cats integration is the priority** — see *Product direction*

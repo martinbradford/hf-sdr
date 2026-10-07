@@ -14,7 +14,10 @@ namespace HfSdr.App;
 
 public partial class MainWindow : Window
 {
-    private readonly SdrClient _client = new();
+    private SdrClient _client = new();
+    private readonly ClientSettings _settings = ClientSettings.Load();
+    private SupervisorClient? _supervisor;      // set while connected to a supervisor-launched receiver
+    private bool _connecting;
     private WaterfallRenderer? _wf;
     private readonly MMDeviceEnumerator _mmEnum = new();
     private readonly List<MMDevice?> _renderDevices = new();   // parallel to AudioDeviceBox; null = Windows default
@@ -44,6 +47,9 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         PopulateAudioDevices();
+        HostBox.Text = _settings.Host;
+        SupervisorBox.IsChecked = _settings.UseSupervisor;
+        ReleaseBox.IsChecked = _settings.ReleaseOnClose;
     }
 
     /// <summary>List the active WASAPI render endpoints; index 0 is the Windows default.</summary>
@@ -289,16 +295,33 @@ public partial class MainWindow : Window
 
     private async void OnConnect(object? sender, RoutedEventArgs e)
     {
-        if (_connected) return;
+        if (_connected || _connecting) return;
+        _connecting = true;
+        ConnectBtn.IsEnabled = false;
         try
         {
+            SaveSettings();
+            string host = _settings.Host;
+            int controlPort = 5555, streamPort = 5556, audioPort = 5557;
+            _supervisor = null;
+
+            if (_settings.UseSupervisor)
+            {
+                var sup = new SupervisorClient(host, _settings.SupervisorPort);
+                var st = await LaunchViaSupervisorAsync(sup, host);
+                if (st is null) return;                       // status text already explains why
+                (controlPort, streamPort, audioPort) = (st.ControlPort, st.StreamPort, st.AudioPort);
+                _supervisor = sup;
+            }
+
+            StatusText.Text = $"Connecting to {host}…";
             _client.SpectrumReceived += OnSpectrum;
             _client.AudioReceived += OnAudio;
 
             JsonElement status = default;
             string server = await Task.Run(() =>
             {
-                _client.Connect();
+                _client.Connect(host, controlPort, streamPort, audioPort);
                 var hello = _client.Send("hello", new { protocol_version = "0.1", client = "HfSdr.App/0.1" });
                 status = _client.Send("get_status");
                 return hello.GetProperty("server").GetString() ?? "?";
@@ -309,12 +332,128 @@ public partial class MainWindow : Window
             _connected = true;
             ApplyStatus(status);
             ConfigBar.IsEnabled = true;
-            StatusText.Text = $"Connected to {server}. Click the waterfall to tune a receiver.";
+            StopRxBtn.IsEnabled = _supervisor is not null;
+            StatusText.Text = $"Connected to {server} on {host}. Click the waterfall to tune a receiver.";
         }
         catch (Exception ex)
         {
             StatusText.Text = "Connect failed: " + ex.Message;
+            _supervisor = null;
+            ResetClient();                                    // drop half-open sockets and handlers
         }
+        finally
+        {
+            _connecting = false;
+            ConnectBtn.IsEnabled = !_connected;
+        }
+    }
+
+    /// <summary>
+    /// Supervisor launch sequence (design §12.7): status → start if needed → poll until running.
+    /// Returns the supervisor's final status, or null after writing the reason to the status line.
+    /// </summary>
+    private async Task<SupervisorStatus?> LaunchViaSupervisorAsync(SupervisorClient sup, string host)
+    {
+        StatusText.Text = $"Contacting supervisor on {host}…";
+        SupervisorStatus st;
+        try { st = await Task.Run(() => sup.Status()); }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"Supervisor not reachable on {host}:{_settings.SupervisorPort} " +
+                              $"(service stopped, PC off, or VPN down?) — {ex.Message}";
+            return null;
+        }
+
+        string mode = DiversityRadio.IsChecked == true ? "diversity" : "single";
+        bool requested = false;
+        var started = DateTime.UtcNow;
+        var deadline = started.AddSeconds(90);                // supervisor's own 20 s start timeout + a diversity switch
+
+        while (true)
+        {
+            if (st.IsRunning) return st;
+
+            if (st.IsFailed && requested)
+            {
+                StatusText.Text = DescribeFailure(st);
+                return null;
+            }
+            if (st.State is "stopped" or "failed" && !requested)
+            {
+                try { await Task.Run(() => sup.Start(_centerHz, mode)); requested = true; }
+                catch (Exception ex) { StatusText.Text = "Supervisor refused start: " + ex.Message; return null; }
+            }
+            if (DateTime.UtcNow > deadline)
+            {
+                StatusText.Text = "Timed out waiting for the receiver to start.\n" + DescribeFailure(st);
+                return null;
+            }
+
+            int secs = (int)(DateTime.UtcNow - started).TotalSeconds;
+            StatusText.Text = $"Starting receiver on {host} ({st.State}, {secs} s)…";
+            await Task.Delay(500);
+            try { st = await Task.Run(() => sup.Status()); }
+            catch (Exception ex) { StatusText.Text = "Lost contact with supervisor: " + ex.Message; return null; }
+        }
+    }
+
+    private static string DescribeFailure(SupervisorStatus st)
+    {
+        var lines = new List<string> { "Receiver failed to start: " + (st.LastError ?? st.State) };
+        for (int i = Math.Max(0, st.LogTail.Count - 4); i < st.LogTail.Count; i++) lines.Add("  " + st.LogTail[i]);
+        return string.Join("\n", lines);
+    }
+
+    private async void OnStopReceiver(object? sender, RoutedEventArgs e)
+    {
+        if (_supervisor is null) return;
+        var sup = _supervisor;
+        StopRxBtn.IsEnabled = false;
+        StatusText.Text = "Stopping receiver…";
+        try
+        {
+            await Task.Run(() => sup.Stop());
+            Disconnect();
+            StatusText.Text = "Receiver stopped. Connect to start it again.";
+        }
+        catch (Exception ex)
+        {
+            StopRxBtn.IsEnabled = true;
+            StatusText.Text = "Stop failed: " + ex.Message;
+        }
+    }
+
+    /// <summary>Tear the session down to the disconnected state without closing the window.</summary>
+    private void Disconnect()
+    {
+        _nullTimer?.Stop();
+        _waveOut?.Dispose();
+        _waveOut = null;
+        ResetClient();
+        _connected = false;
+        _supervisor = null;
+        _vrxId = null;
+        _nullActive = false;
+        NullMarker.IsVisible = false;
+        Marker.IsVisible = false;
+        ConfigBar.IsEnabled = false;
+        NullBar.IsEnabled = false;
+        StopRxBtn.IsEnabled = false;
+        ConnectBtn.IsEnabled = true;
+    }
+
+    private void ResetClient()
+    {
+        _client.Dispose();
+        _client = new SdrClient();
+    }
+
+    private void SaveSettings()
+    {
+        _settings.Host = string.IsNullOrWhiteSpace(HostBox.Text) ? "localhost" : HostBox.Text.Trim();
+        _settings.UseSupervisor = SupervisorBox.IsChecked == true;
+        _settings.ReleaseOnClose = ReleaseBox.IsChecked == true;
+        _settings.Save();
     }
 
     private void OnSpectrum(SpectrumFrame f)
@@ -696,6 +835,12 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        SaveSettings();
+        // Opt-in only: the remote PC may be serving another client, so by default leave the receiver running.
+        if (_connected && _supervisor is not null && _settings.ReleaseOnClose)
+        {
+            try { _supervisor.Stop(2000); } catch { /* best effort */ }
+        }
         _nullTimer?.Stop();
         _waveOut?.Dispose();
         _client.Dispose();

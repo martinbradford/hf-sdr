@@ -29,18 +29,18 @@ public sealed class SdrClient : IDisposable
     public event Action<SpectrumFrame>? SpectrumReceived;
     public event Action<short[]>? AudioReceived;
 
-    public void Connect(string host = "localhost")
+    public void Connect(string host = "localhost", int controlPort = 5555, int streamPort = 5556, int audioPort = 5557)
     {
         _control = new RequestSocket();
-        _control.Connect($"tcp://{host}:5555");
+        _control.Connect($"tcp://{host}:{controlPort}");
 
         _spectrum = new SubscriberSocket();
-        _spectrum.Connect($"tcp://{host}:5556");
+        _spectrum.Connect($"tcp://{host}:{streamPort}");
         _spectrum.Subscribe("spectrum/");
         _spectrum.ReceiveReady += OnSpectrum;
 
         _audio = new SubscriberSocket();
-        _audio.Connect($"tcp://{host}:5557");
+        _audio.Connect($"tcp://{host}:{audioPort}");
         _audio.Subscribe("audio/");
         _audio.ReceiveReady += OnAudio;
 

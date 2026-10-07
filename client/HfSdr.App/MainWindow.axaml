@@ -8,6 +8,15 @@
 
     <StackPanel DockPanel.Dock="Top" Spacing="8" Margin="0,0,0,10">
       <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBlock Text="Host:" VerticalAlignment="Center" FontWeight="Bold"/>
+        <TextBox x:Name="HostBox" Width="160" Text="localhost"/>
+        <CheckBox x:Name="SupervisorBox" Content="Start via supervisor" VerticalAlignment="Center"
+                  ToolTip.Tip="Ask the supervisor service on the host to launch the server (twin-PC). Off = attach to a server already running."/>
+        <CheckBox x:Name="ReleaseBox" Content="Release receiver on close" VerticalAlignment="Center"
+                  ToolTip.Tip="Stop the remote server when this window closes (supervisor mode only)."/>
+        <Button x:Name="StopRxBtn" Content="Stop receiver" IsEnabled="False" Click="OnStopReceiver"/>
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="8">
         <Button x:Name="ConnectBtn" Content="Connect" Click="OnConnect"/>
         <TextBlock Text="Freq (MHz):" VerticalAlignment="Center"/>
         <TextBox x:Name="FreqBox" Width="110" Text="7.150"/>
