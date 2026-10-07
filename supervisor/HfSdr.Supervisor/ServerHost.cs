@@ -28,6 +28,7 @@ public sealed class ServerHost(IOptions<SupervisorOptions> options, ILogger<Serv
 
     private ServerState _state = ServerState.Stopped;
     private Process? _proc;
+    private int? _pid;                    // set only once the process has actually started (Process.Id throws before)
     private string? _token;
     private string? _lastError;
     private DateTime _startedUtc;
@@ -41,9 +42,9 @@ public sealed class ServerHost(IOptions<SupervisorOptions> options, ILogger<Serv
         lock (_gate)
         {
             var o = new JsonObject { ["state"] = StateName() };
-            if (_proc is { } p && _state is ServerState.Starting or ServerState.Running or ServerState.Stopping)
+            if (_pid is { } pid && _state is ServerState.Starting or ServerState.Running or ServerState.Stopping)
             {
-                o["pid"] = p.Id;
+                o["pid"] = pid;
                 o["uptime_s"] = (int)(DateTime.UtcNow - _startedUtc).TotalSeconds;
                 o["ports"] = new JsonObject
                 {
@@ -90,6 +91,7 @@ public sealed class ServerHost(IOptions<SupervisorOptions> options, ILogger<Serv
             if (_state is ServerState.Stopped or ServerState.Failed)
             {
                 _state = ServerState.Starting;
+                _pid = null;
                 _lastError = null;
                 _tail.Clear();
                 _worker = Task.Run(() => RunStartAsync(center, mode));
@@ -171,6 +173,7 @@ public sealed class ServerHost(IOptions<SupervisorOptions> options, ILogger<Serv
 
             lock (_gate) { _bannerSeen = banner; _proc = proc; _token = token; _startedUtc = DateTime.UtcNow; }
             proc.Start();
+            lock (_gate) { _pid = proc.Id; }
             try { _job.Assign(proc); }
             catch (Exception ex) { log.LogWarning(ex, "could not assign server to job object"); }
             proc.BeginOutputReadLine();
@@ -293,7 +296,7 @@ public sealed class ServerHost(IOptions<SupervisorOptions> options, ILogger<Serv
 
     private void MarkStopped(string? note = null)
     {
-        lock (_gate) { if (note is not null) _lastError = note; _state = ServerState.Stopped; _proc = null; _token = null; }
+        lock (_gate) { if (note is not null) _lastError = note; _state = ServerState.Stopped; _proc = null; _pid = null; _token = null; }
     }
 
     private static void KillTree(Process p)

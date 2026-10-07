@@ -1,7 +1,7 @@
 {
   "Supervisor": {
-    "PythonExe": "C:\Users\MABY\radioconda\python.exe",
-    "ServerScript": "D:\Repos\HF-SDR\server\python\headless\server.py",
+    "PythonExe": "C:/Users/MABY/radioconda/python.exe",
+    "ServerScript": "D:/Repos/HF-SDR/server/python/headless/server.py",
     "ListenAddress": "*",
     "Port": 5554,
     "ServerBind": "*",

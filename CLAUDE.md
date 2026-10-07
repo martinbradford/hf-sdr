@@ -107,7 +107,12 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
        re-opened the RSP cleanly on every repeat, in both **single** and **diversity**
        (switched with `set_tuner_mode mode=diversity` before each shutdown). Use a
        non-numeric, non-bool token because `ctl.py` JSON-parses values. (§12.9 criteria met.)
-     - **Supervisor service written (`supervisor/`):** state machine, Job Object, graceful stop via `shutdown`, `status`/`start`/`stop` on :5554; tested offline vs a fake server (validation, diversity apply, graceful stop, child killed with supervisor, failure + log_tail). TODO: run vs real server+RSP, install as service (LocalSystem check §12.6), §12.9 criteria.
+     - **Supervisor service (`supervisor/`) — installed as a Windows service (`HfSdrSupervisor`, LocalSystem, Automatic-Delayed) and validated on the Shack PC:**
+       state machine, Job Object, graceful stop via `shutdown`, `status`/`start`/`stop` on :5554. Real RSP under LocalSystem works (§12.6 passed — no account change needed);
+       10/10 `start`/`stop` cycles in single and 10/10 in diversity; `Stop-Service` with the server running shuts it down gracefully and the RSP re-opens cleanly.
+       Install: `dotnet publish supervisor\HfSdr.Supervisor -c Release -o C:\ProgramData\hf-sdr\supervisor` then `New-Service` (see `supervisor/README.md`); republishing needs the service stopped (admin).
+       Gotchas hit: `supervisor.json` paths must use `/` (or `\`) — bare backslashes are invalid JSON and the service dies at startup.
+       **Still TODO (§12.9, at the machine):** SDRConnect opens the RSP right after `stop`; reboot with nobody logged in → reachable on 5554; start while SDRConnect holds the RSP → `failed` with real `log_tail`; firewall scope 5554–5557 (home + VPN subnets only).
      - **Not started:** §4.3 client throwaway-socket probe (`SdrClient.cs`), §4.4 client-side Job
        Object, client `supervisor` launch mode.
      - Open check for the service: run as LocalSystem first (§12.6) — verify it can read
