@@ -93,6 +93,30 @@ public partial class MainWindow : Window
     private DispatcherTimer? _statsTimer;
     private AudioStatsSnapshot _lastStats;
 
+    private DateTime? _sessionStart;
+
+    /// <summary>Write a start line to the audio log, so a clean run (which logs no events) still leaves
+    /// a record of when it began and with what settings.</summary>
+    private void LogSessionStart()
+    {
+        _sessionStart = DateTime.Now;
+        AudioEventLog.Append($"SESSION START  host={_settings.Host}  supervisor={_settings.UseSupervisor}  " +
+                             $"AudioPrimeMs={Math.Clamp(_settings.AudioPrimeMs, 0, 300)}");
+    }
+
+    /// <summary>Write the end line with the run length and final counters. Safe to call more than once.</summary>
+    private void LogSessionEnd()
+    {
+        if (_sessionStart is not { } start) return;
+        _sessionStart = null;
+        var s = _client.Audio.Snapshot();
+        var ran = DateTime.Now - start;
+        AudioEventLog.Append(
+            $"SESSION END    ran {(int)ran.TotalMinutes}m{ran.Seconds:00}s  frames {s.Frames}  " +
+            $"lost {s.LostFrames}  late {s.Stalls}  dry {s.Underruns} ({s.UnderrunMs:0} ms)  " +
+            $"micro {s.MicroShortfalls}  resync {s.Resyncs} ({s.DiscardedMs:0} ms)  maxgap {s.MaxGapMs:0} ms");
+    }
+
     private void StartAudioStatsTimer()
     {
         _lastStats = default;
@@ -381,6 +405,7 @@ public partial class MainWindow : Window
             ConfigBar.IsEnabled = true;
             StopRxBtn.IsEnabled = _supervisor is not null;
             StatusText.Text = $"Connected to {server} on {host}. Click the waterfall to tune a receiver.";
+            LogSessionStart();                                // only once fully connected, so every start has an end
         }
         catch (Exception ex)
         {
@@ -475,6 +500,7 @@ public partial class MainWindow : Window
     {
         _nullTimer?.Stop();
         _statsTimer?.Stop();
+        LogSessionEnd();                      // before ResetClient replaces the client that holds the counters
         _waveOut?.Dispose();
         _waveOut = null;
         ResetClient();
@@ -921,6 +947,7 @@ public partial class MainWindow : Window
         }
         _nullTimer?.Stop();
         _statsTimer?.Stop();
+        LogSessionEnd();
         _waveOut?.Dispose();
         _client.Dispose();
         base.OnClosed(e);

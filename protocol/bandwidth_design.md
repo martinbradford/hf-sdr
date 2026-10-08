@@ -252,9 +252,12 @@ Untried tests, in the order I would do them:
 4. Check whether the shack PC is on the same subnet as the laptop (192.168.4.x). If it is routed
    through pfSense, anything inspecting traffic there could add jitter.
 
-**Limitation of the log.** `audio-events.log` is written only when something happens, so a clean run
-leaves no file and its length cannot be recovered afterwards. A "session start/end" line (time,
-host, `AudioPrimeMs`, final counters) would fix that; not implemented.
+**Session lines in the log.** `audio-events.log` used to be written only when something happened, so a
+clean run left no file and its length could not be recovered. The client now writes a
+`SESSION START` line (host, supervisor on/off, `AudioPrimeMs`) once fully connected, and a
+`SESSION END` line (run length, frames, and the final lost/late/dry/micro/resync counters and longest
+gap) on disconnect or window close. A crash or kill leaves a start line with no end line. Not yet
+run against a live server.
 
 ## 7. Suggested order
 

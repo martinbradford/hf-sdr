@@ -133,8 +133,8 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
        them, so the wireless backhaul is not the main cause. Exact hop not found. **Next test: a wired client elsewhere in the house
        → shack PC for ~15 min** (zero `late` = Wi-Fi is the cause; stalls remain = switch/pfSense/shack NIC). Not worth chasing for
        daily use: 250 ms already makes the laptop's audio smooth. Details: `protocol/bandwidth_design.md` §6.1.
-       The laptop's `settings.json` currently has 250. `audio-events.log` is only written when something happens, so a clean run
-       leaves no file (a session start/end line would fix that; not implemented).
+       The laptop's `settings.json` currently has 250. `audio-events.log` now gets a `SESSION START` line on connect and a
+       `SESSION END` line (run length + final counters) on disconnect/close, so clean runs are recorded too (not yet run live).
      - **Gapless USB/LSB (and CW) switching — written, builds, logic unit-tested offline, NOT yet run against GNU Radio or hardware:**
        a sideband change used to be client-side `remove_vrx` + `add_vrx`, i.e. two flowgraph `lock()`/`unlock()` reconfigurations (the
        multi-second gap). lsb/usb/cw share one demod chain and differ only in the band-pass taps, so `update_vrx` now accepts `mode`/`filter`
