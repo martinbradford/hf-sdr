@@ -183,8 +183,9 @@ as indicative. Audio sounded smooth in all but was only listened to informally.
 | 80 | Living Room node | ~13.5 min | 0 | 27 | 6 (5 in the first ~15 s) | 48 ms | 255 ms | ~200-260 ms |
 | 250 | Living Room node | ~10 min | 0 | 49 | **0** | 0 ms | 274 ms | ~225-270 ms |
 | 250 | Office AP (mesh master), mesh roaming off | ~9 min | 0 | 12 | 1 (9 ms, at the very start) | 9 ms | 314 ms | ~255-310 ms |
+| 250 | **none: client on the shack PC itself, `localhost`** | **> 15 min** (exact length unknown: no log is written when nothing happens) | 0 | **0** | **0** | 0 ms | not recorded (no `late`, so under 100 ms) | n/a |
 
-`resync` was 0 in every run.
+`resync` was 0 in every run, including the colocated one.
 
 What this shows:
 
@@ -202,12 +203,14 @@ What this shows:
   that setting dry reads are expected until the buffer has ratcheted up.
 - **Stalls are not periodic** across runs (an early guess of ~5-6 minute spacing did not hold).
 
-**Recommendation:** `AudioPrimeMs` = 250 for Wi-Fi clients. Keep the default of 80 for wired or
-colocated use *provisionally*: whether jitter there is really low has **not** been measured over a
-long run (see below), so 250 may turn out to be right everywhere. Possible later improvement: a
-cushion that adapts to the link, or a UI selector.
+**Recommendation:** `AudioPrimeMs` = 250 for Wi-Fi clients. Keep the default of 80 for colocated
+use: a >15 minute colocated run showed no stall at all (`late 0`; that run used 250, but the `late`
+counter does not depend on the cushion), so a small cushion is enough there. A wired client on the
+LAN has **not** been measured over a long run, so 80 is provisional for that case. Possible later
+improvement: a cushion that adapts to the link, or a UI selector.
 
-**Where the stalls come from (not yet determined).**
+**Where the stalls come from: the network path between the two PCs; not the sender; exact hop not
+yet determined.**
 
 Known:
 - The Windows WLAN report for the laptop shows an excellent link (5 GHz channel 40, 802.11ax,
@@ -225,24 +228,33 @@ Known:
   locks the flowgraph briefly), not network. So the wireless backhaul and roaming are **not** the
   main cause.
 
-**Correction to an earlier version of this note:** it said the shack-PC side was clean because a
-colocated run read `late 0` (longest gap 45-52 ms). That run lasted only about 20-40 s, while stall
-clusters arrive roughly every minute or two, so it could easily have missed them. **The sender
-(Python server / shack PC) is therefore not ruled out.**
+- **The sender is cleared.** An earlier version of this note said the shack-PC side was clean from a
+  colocated run lasting only ~20-40 s, which could easily have missed stalls arriving every minute or
+  two; that claim was withdrawn. It has now been tested properly: a client on the shack PC itself,
+  connected to `localhost`, ran for more than 15 minutes with `lost 0 / late 0 / dry 0 / resync 0`
+  (and no log written). The server's audio output therefore stays regular (no gap over 100 ms) under
+  the same load, so the 12-49 late events per ~10 minutes seen from the laptop are introduced between
+  the two machines.
+- **Not settled:** which hop. Loopback says nothing about the shack PC's own network card or the wired
+  leg to the switch, though the Wi-Fi hop is the obvious candidate and moving to the master AP
+  reduced (but did not remove) the stalls.
 
 Untried tests, in the order I would do them:
 
-1. **Colocated 15-minute run on the shack PC** (client to `localhost`, `AudioPrimeMs` 250, no
-   retuning). With no Wi-Fi in the path, `late` events there mean the stalls originate at the sender;
-   near-zero over 15 minutes means the network path is responsible. This decides where to look next.
+1. **A wired client elsewhere in the house against the shack PC for ~15 minutes** (`AudioPrimeMs` 250,
+   no retuning). Wired to wired through the same switch tests everything except Wi-Fi. Zero `late`
+   points at Wi-Fi (then the laptop's adapter power-management and driver settings, or the mesh
+   configuration); stalls still appearing point at the switch, pfSense or the shack PC's NIC.
 2. Run `ping -t` with timestamps from the laptop to the router and to the shack PC at the same time
    and compare spikes against the `late` timestamps in `audio-events.log` (both spike = laptop/mesh
    leg; only the shack PC = beyond the master).
-3. Laptop on a wired connection, if possible; also the laptop's Wi-Fi adapter power-management and
-   driver settings.
+3. Laptop on a wired connection, if possible.
 4. Check whether the shack PC is on the same subnet as the laptop (192.168.4.x). If it is routed
-   through pfSense, anything inspecting traffic there could add jitter. Also consider other load or
-   security software on the shack PC.
+   through pfSense, anything inspecting traffic there could add jitter.
+
+**Limitation of the log.** `audio-events.log` is written only when something happens, so a clean run
+leaves no file and its length cannot be recovered afterwards. A "session start/end" line (time,
+host, `AudioPrimeMs`, final counters) would fix that; not implemented.
 
 ## 7. Suggested order
 

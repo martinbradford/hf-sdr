@@ -127,12 +127,14 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
        **Wi-Fi results (2026-10-08, laptop → shack PC, ~10 min runs):** lost 0 and resync 0 throughout; the link
        delivers late, not lossy (stalls 100–285 ms in bursts). Cushion 250 ms gave `dry 0`; 0 and 80 gave a handful of
        dry reads while the buffer ratcheted up to ~250 ms on its own. **Use `AudioPrimeMs` 250 on Wi-Fi clients, keep 80
-       for wired/colocated, provisionally.** Stall source NOT found: laptop link is excellent and shows no roams; pinning
-       the laptop to the mesh master (wired uplink, roaming off) cut late events (12 vs 49 per ~10 min) but did not remove
-       them, so the wireless backhaul is not the main cause. An earlier note that the shack-PC (sender) side was clean rested
-       on a ~30 s colocated run and is **withdrawn**: the sender is not ruled out. **Next test: a 15-minute colocated run
-       on the shack PC** (client → `localhost`, `AudioPrimeMs` 250); `late` events there mean the sender is the source.
-       Details: `protocol/bandwidth_design.md` §6.1. The laptop's `settings.json` currently has 250.
+       for colocated (provisional for a wired LAN client).** Stall source is the **network path between the PCs, not the sender**:
+       a client on the shack PC itself (`localhost`) ran >15 min with lost/late/dry/resync all 0. The laptop link is excellent with
+       no roams; pinning it to the mesh master (wired uplink, roaming off) cut late events (12 vs 49 per ~10 min) but did not remove
+       them, so the wireless backhaul is not the main cause. Exact hop not found. **Next test: a wired client elsewhere in the house
+       → shack PC for ~15 min** (zero `late` = Wi-Fi is the cause; stalls remain = switch/pfSense/shack NIC). Not worth chasing for
+       daily use: 250 ms already makes the laptop's audio smooth. Details: `protocol/bandwidth_design.md` §6.1.
+       The laptop's `settings.json` currently has 250. `audio-events.log` is only written when something happens, so a clean run
+       leaves no file (a session start/end line would fix that; not implemented).
      - **Gapless USB/LSB (and CW) switching — written, builds, logic unit-tested offline, NOT yet run against GNU Radio or hardware:**
        a sideband change used to be client-side `remove_vrx` + `add_vrx`, i.e. two flowgraph `lock()`/`unlock()` reconfigurations (the
        multi-second gap). lsb/usb/cw share one demod chain and differ only in the band-pass taps, so `update_vrx` now accepts `mode`/`filter`
