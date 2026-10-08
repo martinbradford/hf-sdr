@@ -27,6 +27,9 @@ public sealed class SdrClient : IDisposable
     private readonly object _ctrlLock = new();
     private int _reqId;
 
+    /// <summary>Lost/late/dry counters for the audio path (see <see cref="AudioStats"/>).</summary>
+    public AudioStats Audio { get; } = new();
+
     public event Action<SpectrumFrame>? SpectrumReceived;
     public event Action<short[]>? AudioReceived;
 
@@ -113,6 +116,14 @@ public sealed class SdrClient : IDisposable
     {
         var msg = e.Socket.ReceiveMultipartMessage();
         if (msg.FrameCount < 3) return;
+        try
+        {
+            using var header = JsonDocument.Parse(msg[1].ConvertToString());
+            var h = header.RootElement;
+            if (h.TryGetProperty("vrx_id", out var vid) && h.TryGetProperty("seq", out var sq))
+                Audio.OnFrame(vid.GetInt32(), sq.GetInt64());
+        }
+        catch { /* metrics only: a malformed header must not stop playback */ }
         var bytes = msg[2].ToByteArray();
         var samples = new short[bytes.Length / sizeof(short)];
         Buffer.BlockCopy(bytes, 0, samples, 0, samples.Length * sizeof(short));

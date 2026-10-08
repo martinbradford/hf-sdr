@@ -56,6 +56,8 @@
           <TextBlock x:Name="PeakLabel" VerticalAlignment="Center" MinWidth="130"
                      Text="peak —" FontFamily="Consolas,monospace"/>
         </Border>
+        <TextBlock x:Name="AudioStatsLabel" VerticalAlignment="Center" Margin="8,0,0,0"
+                   Text="audio —" Opacity="0.85" FontFamily="Consolas,monospace"/>
       </StackPanel>
 
       <StackPanel x:Name="NullBar" Orientation="Horizontal" Spacing="8"

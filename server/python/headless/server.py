@@ -101,13 +101,20 @@ class Publisher:
         self._audio = ctx.socket(zmq.PUB); bind_or_exit(self._audio, host, audio_port, "audio")
         self._q = queue.Queue(maxsize=512)
         self._run = True
+        # Frames dropped HERE (send queue full), per stream. Frames dropped later by ZeroMQ when a
+        # slow subscriber's queue fills are NOT counted (PUB drops silently). A client-side seq gap
+        # with this counter still at 0 therefore points at the network/subscriber, not this process.
+        self.dropped = {"stream": 0, "audio": 0}
+        self._drop_lock = threading.Lock()
         threading.Thread(target=self._loop, daemon=True).start()
 
     def send(self, sock, topic, header, payload=b""):
         try:
             self._q.put_nowait((sock, topic.encode(), json.dumps(header).encode(), payload))
         except queue.Full:
-            pass          # real-time: drop rather than block
+            with self._drop_lock:
+                self.dropped[sock] = self.dropped.get(sock, 0) + 1
+            # real-time: drop rather than block
 
     def _loop(self):
         while self._run:
@@ -651,7 +658,9 @@ class SdrServer(gr.top_block):
                         "bandwidth_hz": 1_536_000},
             "gain": self._gain_public(),
             "vrx": [self._vrx_public(v) for v in self._vrx],
-            "streaming": {"audio": self._audio_on, "spectrum": self._spectrum_on},
+            "streaming": {"audio": self._audio_on, "spectrum": self._spectrum_on,
+                          "dropped_frames": {"spectrum": self.pub.dropped["stream"],
+                                             "audio": self.pub.dropped["audio"]}},
         }
         if self._mode == "diversity" and self.combiner is not None:
             if self._null.active:

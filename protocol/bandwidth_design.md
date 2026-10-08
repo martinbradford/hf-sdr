@@ -136,9 +136,30 @@ A small client-side counter and log of both would settle whether compression or 
 buffer is the right fix. Compression is still worth doing for the remote use case, but this tells
 us whether it will cure the Wi-Fi glitches.
 
+**Implemented (not yet exercised against a live server).** `client/HfSdr.App/AudioStats.cs`, shown
+as a readout beside the peak meter (tooltip has detail), plus a log at
+`%APPDATA%\HfSdr\audio-events.log` that gets a line for each second in which anything new happened:
+
+| Counter | Meaning | Points at |
+|---------|---------|-----------|
+| **lost** | frames missing from the per-VRX `seq` | frame never arrived: server queue or ZeroMQ drop |
+| **late** | gap between frames > 100 ms (no loss) | Wi-Fi/TCP stall then burst: needs a deeper buffer |
+| **dry** | playback read padded with silence (count, ms) | what you actually *hear*; follows from late or lost |
+| **resync** | backlog > 400 ms discarded (count, ms) | the existing catch-up clear; itself an audible jump |
+
+Server side, `get_status` reports `streaming.dropped_frames` (frames dropped in the server's own
+send queue). Reading the two together: lost > 0 with `dropped_frames` == 0 means the loss happened
+after the server queue (network or subscriber); lost > 0 matching `dropped_frames` means the server
+could not keep up. Caveats: a new VRX or a seq restart is not counted as loss or lateness; and the
+100 ms stall threshold is a first guess, to be tuned once real numbers exist.
+
+Note the existing `resync` is not a metric only: clearing up to 400 ms of audio to catch up is an
+audible glitch in its own right, and may be responsible for some of the reported dropouts after a
+Wi-Fi stall. The counters will show whether it is.
+
 ## 7. Suggested order
 
-1. Client-side gap/late counters (§6), so there is data.
+1. ~~Client-side gap/late counters (§6), so there is data.~~ Done (needs a live run to produce data).
 2. P1 and P3 (lossless, trivial CPU, ~4x each) behind capability negotiation.
 3. P2 once a coarser-resolution `remote` profile is acceptable.
 4. The client "Connection" profile control.

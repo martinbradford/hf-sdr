@@ -84,8 +84,51 @@ public partial class MainWindow : Window
         };
         // Shared mode; NAudio resamples our 48k/16/mono buffer to the endpoint's mix format.
         _waveOut = new WasapiOut(SelectedRenderDevice(), AudioClientShareMode.Shared, true, 150);
-        _waveOut.Init(_audioBuf);
+        _waveOut.Init(new MeteredWaveProvider(_audioBuf, () => _client.Audio));
         _waveOut.Play();
+    }
+
+    // ---- audio loss/lateness metrics (protocol/bandwidth_design.md §6) ----
+    private DispatcherTimer? _statsTimer;
+    private AudioStatsSnapshot _lastStats;
+
+    private void StartAudioStatsTimer()
+    {
+        _lastStats = default;
+        AudioStatsLabel.Text = "audio —";
+        AudioStatsLabel.Foreground = Brushes.Gray;
+        _statsTimer ??= new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _statsTimer.Tick -= AudioStatsTick;
+        _statsTimer.Tick += AudioStatsTick;
+        _statsTimer.Start();
+    }
+
+    private void AudioStatsTick(object? sender, EventArgs e)
+    {
+        var s = _client.Audio.Snapshot();
+        double bufMs = _audioBuf?.BufferedDuration.TotalMilliseconds ?? 0;
+        bool bad = s.LostFrames + s.Stalls + s.Underruns + s.Resyncs > 0;
+        AudioStatsLabel.Text = $"audio lost {s.LostFrames}  late {s.Stalls}  dry {s.Underruns}  resync {s.Resyncs}";
+        AudioStatsLabel.Foreground = bad ? Brushes.Orange : Brushes.MediumSeaGreen;
+        ToolTip.SetTip(AudioStatsLabel,
+            $"lost  = frames missing from the sequence ({s.GapEvents} gap(s)); never arrived\n" +
+            $"late  = {s.Stalls} stall(s) of >{AudioStats.StallMs:0} ms between frames (max gap {s.MaxGapMs:0} ms)\n" +
+            $"dry   = {s.Underruns} playback read(s) padded with silence ({s.UnderrunMs:0} ms total)\n" +
+            $"resync= {s.Resyncs} backlog discard(s) ({s.DiscardedMs:0} ms of audio dropped)\n" +
+            $"frames={s.Frames}  seq resets={s.SeqResets}  buffered now={bufMs:0} ms\n" +
+            $"Events are logged to {AudioEventLog.PathFile}");
+
+        // Log only when something new happened since the last tick, so rare dropouts leave a trail.
+        var p = _lastStats;
+        if (s.LostFrames != p.LostFrames || s.Stalls != p.Stalls || s.Underruns != p.Underruns || s.Resyncs != p.Resyncs)
+        {
+            AudioEventLog.Append(
+                $"+lost {s.LostFrames - p.LostFrames}  +late {s.Stalls - p.Stalls}  " +
+                $"+dry {s.Underruns - p.Underruns} ({s.UnderrunMs - p.UnderrunMs:0} ms)  " +
+                $"+resync {s.Resyncs - p.Resyncs} ({s.DiscardedMs - p.DiscardedMs:0} ms)  " +
+                $"maxgap {s.MaxGapMs:0} ms  buffered {bufMs:0} ms");
+        }
+        _lastStats = s;
     }
 
     private void OnAudioDeviceChanged(object? sender, SelectionChangedEventArgs e)
@@ -328,6 +371,7 @@ public partial class MainWindow : Window
             });
 
             StartAudioOut();
+            StartAudioStatsTimer();
 
             _connected = true;
             ApplyStatus(status);
@@ -427,6 +471,7 @@ public partial class MainWindow : Window
     private void Disconnect()
     {
         _nullTimer?.Stop();
+        _statsTimer?.Stop();
         _waveOut?.Dispose();
         _waveOut = null;
         ResetClient();
@@ -503,8 +548,12 @@ public partial class MainWindow : Window
         Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
         _audioBuf.AddSamples(bytes, 0, bytes.Length);   // thread-safe
         // Bound latency: if the backlog grows past ~400 ms, resync to near-realtime.
-        if (_audioBuf.BufferedDuration > TimeSpan.FromMilliseconds(400))
+        var backlog = _audioBuf.BufferedDuration;
+        if (backlog > TimeSpan.FromMilliseconds(400))
+        {
             _audioBuf.ClearBuffer();
+            _client.Audio.OnResync(backlog.TotalMilliseconds);
+        }
     }
 
     private async void OnTune(object? sender, RoutedEventArgs e)
@@ -842,6 +891,7 @@ public partial class MainWindow : Window
             try { _supervisor.Stop(2000); } catch { /* best effort */ }
         }
         _nullTimer?.Stop();
+        _statsTimer?.Stop();
         _waveOut?.Dispose();
         _client.Dispose();
         base.OnClosed(e);

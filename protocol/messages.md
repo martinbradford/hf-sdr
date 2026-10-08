@@ -150,9 +150,15 @@ Combiner state is reported in `get_status` (§4.7) under `combiner`: MRC → `{ 
       "filter": { "low_hz": -2400, "high_hz": -300 },
       "squelch_dbfs": null, "volume": 0.5, "tuner": 0 }
   ],
-  "streaming": { "audio": true, "spectrum": true }
+  "streaming": { "audio": true, "spectrum": true,
+                 "dropped_frames": { "spectrum": 0, "audio": 0 } }
 }
 ```
+
+`streaming.dropped_frames` counts frames the server itself discarded because its send queue was
+full (cumulative since start, per stream). It does **not** include frames ZeroMQ later drops for a
+slow subscriber. A client-side `seq` gap with this still at 0 therefore points at the
+network/subscriber, not the server (see `bandwidth_design.md` §6).
 
 ### 4.8 `get_capabilities` result
 

@@ -13,6 +13,7 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
 - [`docs/SDR_PROJECT_CONTEXT.md`](docs/SDR_PROJECT_CONTEXT.md) — full design & architecture
 - [`docs/SETUP_NOTES.md`](docs/SETUP_NOTES.md) — environment, machine-specific gotchas, corrections to the context doc
 - [`docs/PORTING.md`](docs/PORTING.md) — Linux/macOS assessment (nothing run off Windows yet); read before any non-Windows work
+- [`protocol/bandwidth_design.md`](protocol/bandwidth_design.md) — exploratory, low priority: reducing stream bandwidth (Wi-Fi/remote); also documents the audio lost/late/dry metrics
 - [`README.md`](README.md) — overview + live status
 
 ## Environment (Windows 11, "Shack PC" with the RSP Duo attached)
@@ -117,6 +118,10 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
      - **Client `supervisor` launch mode — written, builds, NOT yet exercised in the GUI:** `SupervisorClient.cs` (throwaway REQ socket per call = §4.3 for the supervisor path),
        `ClientSettings.cs` (host / use-supervisor / release-on-close in `%APPDATA%\HfSdr\settings.json`), and `MainWindow` Host box, "Start via supervisor", "Release receiver on close"
        (opt-in, default off), "Stop receiver" (stop + disconnect). Connect flow = §12.7: status → start{center,tuner_mode} → poll → attach using the ports the supervisor reports.
+     - **Audio loss/lateness metrics — written, builds, logic unit-checked offline, NOT yet run against a live server:**
+       client readout `audio lost/late/dry/resync` (`AudioStats.cs`, tooltip + `%APPDATA%\HfSdr\audio-events.log`) and server
+       `get_status` → `streaming.dropped_frames`. TODO at the machines: connect over Wi-Fi, confirm the readout stays
+       0/0/0/0 on a clean link, then watch it during real dropouts (see `protocol/bandwidth_design.md` §6).
      - **Done:** lazy-pirate in `SdrClient.Send` (a timed-out control request now replaces the wedged REQ socket; not retried). **Not started:** §4.4 client-side Job Object (only needed for local `spawn` mode).
      - Open check for the service: run as LocalSystem first (§12.6) — verify it can read
        radioconda and import `gnuradio.sdrplay3`; else log on as the owner's account.

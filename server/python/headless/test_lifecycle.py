@@ -10,7 +10,8 @@ with a fake SdrServer. Checks:
   (2) `shutdown` is refused with no token configured, and with a wrong token,
   (3) `shutdown` with the right token is acknowledged, THEN the server stops
       (srv.stop()/srv.wait() run — the device-deinit path),
-  (4) ordinary commands (`hello`) are unaffected.
+  (4) ordinary commands (`hello`) are unaffected,
+  (5) the Publisher counts frames it drops when its send queue is full.
 
 Run:  python server\\python\\headless\\test_lifecycle.py   (needs pyzmq + numpy)
 """
@@ -185,7 +186,23 @@ def test_shutdown_token():
     print("  bad/missing token -> bad_request; right token -> ack, then stop()+wait()  OK")
 
 
+def test_publisher_drop_counter():
+    print("-- Publisher counts frames dropped when its send queue is full --")
+    import queue
+    cp, sp, ap = free_ports(3)
+    pub = server.Publisher(zmq.Context.instance(), "127.0.0.1", sp, ap)
+    pub._run = False                    # stop the drain thread so the queue can fill
+    time.sleep(0.5)
+    pub._q = queue.Queue(maxsize=2)
+    for _ in range(5):
+        pub.send("audio", "audio/1", {}, b"x")
+    pub.send("stream", "spectrum/0", {}, b"x")      # queue already full -> counted as stream
+    assert pub.dropped == {"stream": 1, "audio": 3}, pub.dropped
+    print("  5 audio sends into a 2-deep queue -> 3 dropped; spectrum counted separately  OK")
+
+
 if __name__ == "__main__":
+    test_publisher_drop_counter()
     test_port_clash()
     test_shutdown_refused_without_token()
     test_shutdown_token()
