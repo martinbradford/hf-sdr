@@ -135,34 +135,26 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
        daily use: 250 ms already makes the laptop's audio smooth. Details: `protocol/bandwidth_design.md` §6.1.
        The laptop's `settings.json` currently has 250. `audio-events.log` now gets a `SESSION START` line on connect and a
        `SESSION END` line (run length + final counters) on disconnect/close, so clean runs are recorded too (not yet run live).
-     - **Gapless USB/LSB (and CW) switching — written, builds, logic unit-tested offline, NOT yet run against GNU Radio or hardware:**
-       a sideband change used to be client-side `remove_vrx` + `add_vrx`, i.e. two flowgraph `lock()`/`unlock()` reconfigurations (the
-       multi-second gap). lsb/usb/cw share one demod chain and differ only in the band-pass taps, so `update_vrx` now accepts `mode`/`filter`
-       and swaps the taps on the running filter (`server.py`: `resolve_demod_change`, `apply_demod_change`, `IN_PLACE_MODES`); the client calls
-       `update_vrx` (falls back to remove + add for an old server or a mode needing another demodulator) and applies the dropdown immediately.
-       AM/FM (not implemented) would still need remove + add. **TODO at the shack PC:** run `test_sideband_flowgraph.py` (real GNU Radio, no RSP;
-       checks audio follows the sideband, no gap, contiguous seq, and prints the click size at the switch), then listen to a real signal. If the
-       click is objectionable the upgrade is a sample-aligned crossfade between two parallel filters (≈2× filter CPU per VRX); a volume ramp from
-       the control thread was rejected because it cannot be sample-aligned through GNU Radio's buffers. Also unverified: that `set_taps` on a
-       running `fir_filter_ccc` is safe (believed so; the test exercises it). Offline: `test_vrx_update.py`.
-       **Update 2026-10-08:** `test_sideband_flowgraph.py` PASSED on the shack PC (audio follows the sideband, longest pause 32 ms, contiguous seq;
-       click ≈ 2–4× a normal sample jump, measured crudely). Live listening: much better than before but a **brief (sub-second) audio break and
-       waterfall freeze remain**, cause unknown. Planned split test (after the shack PC memory upgrade): switch sideband with
-       `ctl.py update_vrx vrx_id=<id> mode=lsb` instead of the client; freeze persists = server-side, absent = client-side (the client also resends `freq_hz`).
-       **ROOT CAUSE CANDIDATE (2026-10-08):** the live server had never been restarted onto the new code. `ctl.py update_vrx mode=usb` returned `mode: lsb` (ignored), and
-       the VRX id had reached 22 (each remove+add bumps it): every client sideband/BW change was silently falling back to remove + add. A `git pull` does not change a
-       running server; **restart it (`sup_ctl.py stop` then `start`, using the radioconda python) after every pull**. To stop this recurring, `hello` now returns `build`
-       (git commit/script mtime/start time of the running process) and `features` (incl. `vrx_inplace_mode_filter`); the server prints a `hf-sdr-server: build ...` line at
-       start; the client shows the build on connect, warns if the flag is missing, says so in the status line when it falls back to remove + add, and logs build/inplace in
-       the `SESSION START` line. **Retest the sideband/BW pause on a freshly restarted server before using the stall monitor.**
-       **Update 2026-10-08 (later):** BW changes showed the same sub-second audio+waterfall pause (probably the fallback above). The extended `test_sideband_flowgraph.py` (with and
-       without `--with-freq`) passed with `update_vrx` taking 0.1 ms and pauses ≤32 ms, so neither the tap swap nor re-sending the frequency is the
-       cause; it is something only the live system has (RSP source, spectrum chain, or the client). **Stall monitor added** (server `--debug-stalls`
-       / env `HF_SDR_DEBUG_STALLS=1`, `--stall-ms`, default 80): logs to stderr with ms stamps any gap in the spectrum/audio sinks' `work()`, a late
-       Python watchdog thread (= GIL held; if only the sinks stall it is inside the flowgraph) and per-command control timing. Run the server by hand
-       with it (stop the supervisor's server first), change bandwidth in the client, read the log; then repeat from `ctl.py` to split server vs client.
-       **Bandwidth control:** client BW dropdown (0.5/1.0/1.8/2.4/2.8/3.2/4.0 kHz, default 2.8 = the old passbands; low edge fixed at 200 Hz, LSB mirrored;
-       `Passband.cs`) sends `filter` via the same in-place `update_vrx`; persisted as `BandwidthHz` in settings.json. Builds; not yet run live.
+     - **Gapless USB/LSB/CW switching and bandwidth control — DONE, verified live (2026-10-08).** A sideband change used to be client-side
+       `remove_vrx` + `add_vrx` (two flowgraph `lock()`/`unlock()` reconfigurations: a multi-second gap). lsb/usb/cw share one demod chain and differ
+       only in the band-pass taps, so `update_vrx` accepts `mode`/`filter` and swaps the taps on the running filter (`server.py`:
+       `resolve_demod_change`, `apply_demod_change`, `IN_PLACE_MODES`); no lock, the VRX keeps its id/AGC/audio seq. The client calls `update_vrx`
+       and applies the sideband dropdown immediately. **BW dropdown** (0.5/1.0/1.8/2.4/2.8/3.2/4.0 kHz, default 2.8 = the old passbands; low edge
+       fixed at 200 Hz, LSB mirrored; `Passband.cs`) uses the same call; persisted as `BandwidthHz` in settings.json. AM/FM (not implemented) would
+       still need remove + add. Verified: `test_sideband_flowgraph.py` on the shack PC (real GNU Radio, no RSP; audio follows the sideband, longest
+       pause ≤32 ms, contiguous seq, `update_vrx` 0.1 ms, with and without `--with-freq`) and, on a restarted server, both sideband switching and
+       filter selection are gapless from the client. Offline: `test_vrx_update.py`. Click at the switch is not characterised beyond a crude
+       number (the metric is unreliable; judge by ear); if it is ever objectionable the upgrade is a sample-aligned crossfade between two parallel
+       filters (≈2× filter CPU per VRX; a volume ramp from the control thread cannot be sample-aligned through GNU Radio's buffers).
+     - **Lesson: restart the server after every `git pull`.** For a while a sub-second audio+waterfall pause remained on sideband/BW changes. The cause
+       was a live server that had never been restarted onto the new code: it ignored `update_vrx` `mode`/`filter` (`ctl.py update_vrx mode=usb` returned
+       `mode: lsb`; the VRX id had reached 22), and the client silently fell back to remove + add each time. Safeguards now exist: `hello` returns
+       `build` (git commit / script mtime / start time of the running process) and `features` (incl. `vrx_inplace_mode_filter`); the server prints a
+       `hf-sdr-server: build ...` line at start; the client shows the build on connect, warns if the flag is missing, says so in the status line
+       when it falls back, and records build/inplace in the `SESSION START` log line. Restart with the radioconda python:
+       `sup_ctl.py stop` then `start` (plain `python` lacks pyzmq). A **stall monitor** remains as a debug aid (server `--debug-stalls` /
+       `HF_SDR_DEBUG_STALLS=1`, `--stall-ms`, default 80): ms-stamped stderr lines for gaps in the spectrum/audio sinks' `work()`, a late Python
+       watchdog thread (GIL held; sinks stalling alone = inside the flowgraph) and control-command timing.
      - **Done:** lazy-pirate in `SdrClient.Send` (a timed-out control request now replaces the wedged REQ socket; not retried). **Not started:** §4.4 client-side Job Object (only needed for local `spawn` mode).
      - Open check for the service: run as LocalSystem first (§12.6) — verify it can read
        radioconda and import `gnuradio.sdrplay3`; else log on as the owner's account.
