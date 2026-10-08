@@ -23,6 +23,7 @@ Run on a machine with GNU Radio (e.g. the shack PC):
     C:\\Users\\MABY\\radioconda\\python.exe server\\python\\headless\\test_sideband_flowgraph.py
 Takes ~10 s. Does not touch the RSP, so it can run while the server is stopped.
 """
+import argparse
 import sys
 import time
 import types
@@ -67,6 +68,12 @@ def window_audio(frames, t0, t1):
 
 
 def main():
+    ap = argparse.ArgumentParser(description="in-place sideband/bandwidth change: is the audio gapless?")
+    ap.add_argument("--with-freq", action="store_true",
+                    help="also send freq_hz with every update_vrx, as the client does")
+    args = ap.parse_args()
+    extra = {"freq_hz": CENTER} if args.with_freq else {}
+
     pub = FakePub()
     fake = types.SimpleNamespace(
         pub=pub, center=CENTER, _vrx={}, _next_id=1, _audio_on=True,
@@ -87,14 +94,22 @@ def main():
     for x, y in zip(rec["chain"], rec["chain"][1:]):
         tb.connect(x, y)
 
+    def timed(**kw):
+        t0 = time.perf_counter()
+        out = server.SdrServer.update_vrx(fake, vid, **kw, **extra)
+        return out, (time.perf_counter() - t0) * 1000
+
     tb.start()
     t_start = time.monotonic()
     time.sleep(PHASE_S)
     t_sw1 = time.monotonic()
-    out1 = server.SdrServer.update_vrx(fake, vid, mode="lsb")
+    out1, ms1 = timed(mode="lsb")
     time.sleep(PHASE_S)
     t_sw2 = time.monotonic()
-    out2 = server.SdrServer.update_vrx(fake, vid, mode="usb")
+    out2, ms2 = timed(mode="usb")
+    time.sleep(PHASE_S)
+    t_bw = time.monotonic()
+    out3, ms3 = timed(filter={"low_hz": 200, "high_hz": 2000})
     time.sleep(PHASE_S)
     t_end = time.monotonic()
     tb.stop(); tb.wait()
@@ -108,6 +123,9 @@ def main():
         fails += 0 if cond else 1
 
     check(out1["mode"] == "lsb" and out2["mode"] == "usb", "update_vrx reported the new modes")
+    check(out3["filter"] == {"low_hz": 200, "high_hz": 2000}, "update_vrx reported the narrowed passband")
+    print(f"     update_vrx call time: usb->lsb {ms1:.1f} ms, lsb->usb {ms2:.1f} ms, narrow {ms3:.1f} ms"
+          f"  ({'with' if args.with_freq else 'without'} freq_hz)")
     check(len(frames) > 10, f"audio frames received ({len(frames)})")
     if len(frames) <= 10:
         sys.exit("no audio produced; cannot continue")
@@ -118,7 +136,8 @@ def main():
     for name, t0, t1, want, other in (
             ("USB", t_start + settle, t_sw1, TONE_USB_HZ, abs(TONE_LSB_HZ)),
             ("LSB", t_sw1 + settle, t_sw2, abs(TONE_LSB_HZ), TONE_USB_HZ),
-            ("USB again", t_sw2 + settle, t_end, TONE_USB_HZ, abs(TONE_LSB_HZ))):
+            ("USB again", t_sw2 + settle, t_bw, TONE_USB_HZ, abs(TONE_LSB_HZ)),
+            ("USB narrowed", t_bw + settle, t_end, TONE_USB_HZ, abs(TONE_LSB_HZ))):
         x = window_audio(frames, t0, t1)
         if len(x) < 4096:
             check(False, f"{name}: too little audio to analyse ({len(x)} samples)")
@@ -133,8 +152,8 @@ def main():
     # (2) no gap around the switches
     ts = np.array([f[0] for f in frames])
     gaps = np.diff(ts)
-    for name, tsw in (("USB->LSB", t_sw1), ("LSB->USB", t_sw2)):
-        near = gaps[(ts[1:] > tsw - 0.2) & (ts[1:] < tsw + 0.5)]
+    for name, tsw in (("USB->LSB", t_sw1), ("LSB->USB", t_sw2), ("narrow 2.8->1.8 kHz", t_bw)):
+        near = gaps[(ts[1:] > tsw - 0.2) & (ts[1:] < tsw + 0.8)]
         worst = float(near.max()) if len(near) else float("nan")
         check(worst < MAX_GAP_S, f"{name}: longest pause between audio frames {worst * 1000:.0f} ms (limit {MAX_GAP_S * 1000:.0f} ms)")
     print(f"     (whole run: longest pause {gaps.max() * 1000:.0f} ms, median {np.median(gaps) * 1000:.0f} ms)")
@@ -148,7 +167,7 @@ def main():
     # click size at each switch, for judging the transient
     full = np.concatenate([f[3] for f in frames]).astype(np.float64)
     typical = float(np.percentile(np.abs(np.diff(full)), 99))
-    for name, tsw in (("USB->LSB", t_sw1), ("LSB->USB", t_sw2)):
+    for name, tsw in (("USB->LSB", t_sw1), ("LSB->USB", t_sw2), ("narrow", t_bw)):
         w = window_audio(frames, tsw - CLICK_WINDOW_S, tsw + CLICK_WINDOW_S).astype(np.float64)
         jump = float(np.abs(np.diff(w)).max()) if len(w) > 1 else float("nan")
         print(f"     {name}: largest sample jump near the switch {jump:.0f} vs typical (99th pct) {typical:.0f}"
