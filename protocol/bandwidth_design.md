@@ -177,17 +177,18 @@ One run per cushion setting; durations are approximate and the runs were **not**
 controlled (no deliberate load, laptop near-idle with a little web browsing), so treat the figures
 as indicative. Audio sounded smooth in all but was only listened to informally.
 
-| `AudioPrimeMs` | Duration | lost | late | dry reads | silence | longest gap | buffered level |
-|----------------|----------|------|------|-----------|---------|-------------|----------------|
-| 0 | ~90 s | 0 | 10 | 8 (4 at connect) | 46 ms | 285 ms | 119-256 ms after stalls |
-| 80 | ~13.5 min | 0 | 27 | 6 (5 in the first ~15 s) | 48 ms | 255 ms | ~200-260 ms |
-| 250 | ~10 min | 0 | 49 | **0** | 0 ms | 274 ms | ~225-270 ms |
+| `AudioPrimeMs` | Laptop attached to | Duration | lost | late | dry reads | silence | longest gap | buffered level |
+|----------------|--------------------|----------|------|------|-----------|---------|-------------|----------------|
+| 0 | Living Room node | ~90 s | 0 | 10 | 8 (4 at connect) | 46 ms | 285 ms | 119-256 ms after stalls |
+| 80 | Living Room node | ~13.5 min | 0 | 27 | 6 (5 in the first ~15 s) | 48 ms | 255 ms | ~200-260 ms |
+| 250 | Living Room node | ~10 min | 0 | 49 | **0** | 0 ms | 274 ms | ~225-270 ms |
+| 250 | Office AP (mesh master), mesh roaming off | ~9 min | 0 | 12 | 1 (9 ms, at the very start) | 9 ms | 314 ms | ~255-310 ms |
 
 `resync` was 0 in every run.
 
 What this shows:
 
-- **Nothing is lost; the link delivers late.** `lost` is 0 and the stalls are 100-285 ms bursts, so
+- **Nothing is lost; the path delivers late.** `lost` is 0 and the stalls are 100-314 ms bursts, so
   this is jitter, not bandwidth. Compressing the streams would not have helped this symptom.
 - **The buffer ratchets up on its own.** After a stall the burst delivers all the delayed audio but
   playback is real-time, so the delay stays as extra latency (the buffer climbs to about the longest
@@ -201,27 +202,47 @@ What this shows:
   that setting dry reads are expected until the buffer has ratcheted up.
 - **Stalls are not periodic** across runs (an early guess of ~5-6 minute spacing did not hold).
 
-**Recommendation:** `AudioPrimeMs` = 250 for Wi-Fi clients; keep the default of 80 for wired or
-colocated use, where there is almost no jitter and 250 would only add delay. Possible later
-improvement: a cushion that adapts to the link, or a UI selector.
+**Recommendation:** `AudioPrimeMs` = 250 for Wi-Fi clients. Keep the default of 80 for wired or
+colocated use *provisionally*: whether jitter there is really low has **not** been measured over a
+long run (see below), so 250 may turn out to be right everywhere. Possible later improvement: a
+cushion that adapts to the link, or a UI selector.
 
-**Where the stalls come from (not yet determined).** The Windows WLAN report for the laptop shows an
-excellent link (5 GHz channel 40, 802.11ax, -39 dBm, 1201 Mbps) and **no disconnects, roams or
-reassociations** during the tests (it does not record background scans or airtime contention). The
-shack PC side is clean: colocated on the shack PC the same counters read late 0 (longest gap
-45-52 ms). Topology: the laptop is on the Living Room mesh node, which reaches the master (in the
-shack) by **wireless backhaul**; the shack PC is wired (1G) to a switch to the pfSense router, and
-the master AP is also wired to that switch. A wireless backhaul shares airtime and is the leading
-suspect, but that is a hypothesis. Untried tests, cheapest first:
+**Where the stalls come from (not yet determined).**
 
-1. Put the laptop next to the master AP (wired uplink) and repeat: stalls vanishing would implicate
-   the node-to-master backhaul.
+Known:
+- The Windows WLAN report for the laptop shows an excellent link (5 GHz channel 40, 802.11ax,
+  -39 dBm, 1201 Mbps) and **no disconnects, roams or reassociations** during the tests (it does not
+  record background scans, airtime contention or AP-side steering).
+- Topology: the laptop was on the Living Room mesh node, which reaches the master (in the shack) by
+  **wireless backhaul**; the shack PC is wired (1G) to a switch to the pfSense router, and the
+  master AP is wired to the same switch.
+- **Moving the laptop to the mesh master (wired uplink) with the control panel's per-device "Mesh
+  Technology" off, which stops it roaming, helped only modestly:** about 12 late events in ~9 min
+  versus 49 in ~10 min. But stall rates across earlier runs already ranged from roughly 2 to 6.7 per
+  minute (this run: ~1.3), so the difference is not clearly outside run-to-run variation, and the
+  longest stall seen so far (314 ms) was in this run, as its first event. Two things were changed at
+  once (which node, and roaming), and the 314 ms first event may be server-side (adding a receiver
+  locks the flowgraph briefly), not network. So the wireless backhaul and roaming are **not** the
+  main cause.
+
+**Correction to an earlier version of this note:** it said the shack-PC side was clean because a
+colocated run read `late 0` (longest gap 45-52 ms). That run lasted only about 20-40 s, while stall
+clusters arrive roughly every minute or two, so it could easily have missed them. **The sender
+(Python server / shack PC) is therefore not ruled out.**
+
+Untried tests, in the order I would do them:
+
+1. **Colocated 15-minute run on the shack PC** (client to `localhost`, `AudioPrimeMs` 250, no
+   retuning). With no Wi-Fi in the path, `late` events there mean the stalls originate at the sender;
+   near-zero over 15 minutes means the network path is responsible. This decides where to look next.
 2. Run `ping -t` with timestamps from the laptop to the router and to the shack PC at the same time
    and compare spikes against the `late` timestamps in `audio-events.log` (both spike = laptop/mesh
    leg; only the shack PC = beyond the master).
-3. Laptop on a wired connection, if possible.
+3. Laptop on a wired connection, if possible; also the laptop's Wi-Fi adapter power-management and
+   driver settings.
 4. Check whether the shack PC is on the same subnet as the laptop (192.168.4.x). If it is routed
-   through pfSense, anything inspecting traffic there could add jitter.
+   through pfSense, anything inspecting traffic there could add jitter. Also consider other load or
+   security software on the shack PC.
 
 ## 7. Suggested order
 
