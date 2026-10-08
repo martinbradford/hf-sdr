@@ -19,12 +19,14 @@ two-capture-window VRX model; those commands return `unsupported` for now.
 """
 
 import argparse
+import datetime
 import gc
 import hmac
 import json
 import os
 import queue
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -42,6 +44,12 @@ except ImportError:
     sys.exit("gr-sdrplay3 not found. See docs/SETUP_NOTES.md.")
 
 PROTOCOL_VERSION = "0.1"
+SERVER_NAME = "hf-sdr-server/0.1"
+# What this build can do, advertised in `hello` and `get_capabilities` so a client can tell an
+# out-of-date server from a current one (a server that predates a feature simply lacks the flag).
+FEATURES = ["multi_vrx", "diversity", "diversity_null",
+            "vrx_inplace_mode_filter"]      # update_vrx applies mode/filter changes (lsb/usb/cw) in place
+BUILD = {}                                  # filled at startup by build_info()
 SOURCE_RATE = 2_000_000
 VRX_DECIM = 40
 INTER_RATE = SOURCE_RATE // VRX_DECIM       # 50 kHz
@@ -118,6 +126,31 @@ def apply_demod_change(rec, new_mode, edges):
         rec["sb"].set_taps(sideband_taps(low, high))
         rec["filter"] = {"low_hz": low, "high_hz": high}
     rec["mode"] = new_mode
+
+
+def build_info():
+    """Which code is this process running? Captured once at startup, because a `git pull` later does
+    not change what a running process executes; that mismatch is exactly what this exposes.
+    git is best effort (it may not be on PATH, e.g. under a service account); the script's
+    modification time is always available."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    utc = datetime.timezone.utc
+    info = {"git": None,
+            "script_mtime_utc": datetime.datetime.fromtimestamp(os.path.getmtime(__file__), utc).isoformat(timespec="seconds"),
+            "started_utc": datetime.datetime.now(utc).isoformat(timespec="seconds")}
+    flags = 0x08000000 if sys.platform == "win32" else 0          # CREATE_NO_WINDOW
+    try:
+        r = subprocess.run(["git", "-C", here, "rev-parse", "--short", "HEAD"], capture_output=True,
+                           text=True, timeout=3, creationflags=flags)
+        if r.returncode == 0 and r.stdout.strip():
+            info["git"] = r.stdout.strip()
+            d = subprocess.run(["git", "-C", here, "status", "--porcelain", "--untracked-files=no"],
+                               capture_output=True, text=True, timeout=3, creationflags=flags)
+            if d.returncode == 0 and d.stdout.strip():
+                info["git"] += "+modified"
+    except Exception:  # noqa: BLE001  (no git, timeout, ...)
+        pass
+    return info
 
 
 def _clamp(v, lo, hi):
@@ -794,7 +827,7 @@ def control_loop(sock, srv, stop_evt, shutdown_token=None):
     caps = {"tuner_modes": list(TUNER_MODES), "demod_modes": list(DEFAULT_FILTERS),
             "max_vrx": MAX_VRX, "sample_rates_hz": [SOURCE_RATE],
             "audio_rate_hz": AUDIO_RATE, "audio_formats": ["int16"],
-            "features": ["multi_vrx", "diversity", "diversity_null"]}
+            "features": FEATURES}
 
     def handle(cmd, p):
         nonlocal stopping
@@ -808,7 +841,8 @@ def control_loop(sock, srv, stop_evt, shutdown_token=None):
             stopping = True          # stop_evt is set only AFTER the reply is sent
             return {"stopping": True}
         if cmd == "hello":
-            return {"protocol_version": PROTOCOL_VERSION, "server": "hf-sdr-server/0.1"}
+            return {"protocol_version": PROTOCOL_VERSION, "server": SERVER_NAME,
+                    "build": BUILD, "features": FEATURES}
         if cmd == "get_status":
             return srv.status()
         if cmd == "get_capabilities":
@@ -885,6 +919,9 @@ def main():
                    help="enable the remote 'shutdown' command, gated by this token "
                         "(or env HF_SDR_SHUTDOWN_TOKEN). Without it, shutdown is refused.")
     args = p.parse_args()
+    BUILD.update(build_info())
+    print(f"hf-sdr-server: build git={BUILD['git']}  script modified {BUILD['script_mtime_utc']}  "
+          f"features={','.join(FEATURES)}", flush=True)
     if args.debug_stalls:
         STALL.enable(args.stall_ms)
 

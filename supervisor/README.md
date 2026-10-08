@@ -29,12 +29,19 @@ and VPN subnets only.
 
 ## Test tools (`supervisor/tools/`)
 
-Run with any Python that has `pyzmq` (radioconda has it). Point at a remote shack PC with `HF_SDR_HOST`.
+Run with a Python that has `pyzmq`. On the shack PC that is the radioconda interpreter; a plain `python`
+on the PATH usually lacks it (`ModuleNotFoundError: No module named 'zmq'`). Point at a remote shack PC
+with `HF_SDR_HOST`.
 
 ```powershell
-$env:HF_SDR_HOST = "new-shack-pc.local"
-python supervisor\tools\sup_ctl.py status
-python supervisor\tools\sup_ctl.py start '{"center_hz":7.15e6,"tuner_mode":"diversity"}'
-python supervisor\tools\sup_ctl.py stop
-python supervisor\tools\cycle.py diversity 10     # start/verify mode/stop, N times; prints OK/FAIL per cycle
+$py = "C:\Users\MABY\radioconda\python.exe"
+$env:HF_SDR_HOST = "new-shack-pc.local"        # omit when running on the shack PC itself
+& $py supervisor\tools\sup_ctl.py status
+& $py supervisor\tools\sup_ctl.py start '{"center_hz":7.15e6,"tuner_mode":"diversity"}'
+& $py supervisor\tools\sup_ctl.py stop
+& $py supervisor\tools\cycle.py diversity 10     # start/verify mode/stop, N times; prints OK/FAIL per cycle
 ```
+
+**After a `git pull`, restart the server** (`stop` then `start`): a running server keeps executing the
+code it started with. `hello` reports the `git` commit it started from and its feature flags, and the
+client warns on connect if the server is out of date.

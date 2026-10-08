@@ -13,7 +13,9 @@ with a fake SdrServer. Checks:
   (4) ordinary commands (`hello`) are unaffected,
   (5) the Publisher counts frames it drops when its send queue is full,
   (6) the stall monitor reports a gap only over its threshold, only when enabled, from the sinks,
-      and logs control-command timing when --debug-stalls is given.
+      and logs control-command timing when --debug-stalls is given,
+  (7) `hello`/`get_capabilities` advertise the build and the feature flags a client can check,
+      and the startup build line does not look like the readiness banner the supervisor waits for.
 
 Run:  python server\\python\\headless\\test_lifecycle.py   (needs pyzmq + numpy)
 """
@@ -238,7 +240,43 @@ def test_stall_monitor():
     print("  --debug-stalls: banner printed, control command timing logged, get_status skipped  OK")
 
 
+def test_build_and_features():
+    print("-- build info and feature flags --")
+    import contextlib
+    import io
+
+    cp, sp, ap = free_ports(3)
+    FakeSrv.instances.clear()
+
+    def driver():
+        time.sleep(0.5)
+        h = call(cp, "hello")
+        c = call(cp, "get_capabilities")
+        call(cp, "shutdown", {"token": "tok"})
+        return {"hello": h, "caps": c}
+
+    out_buf = io.StringIO()
+    with contextlib.redirect_stdout(out_buf):
+        code, res = run_main(["--bind", "127.0.0.1", "--control-port", str(cp), "--stream-port", str(sp),
+                              "--audio-port", str(ap), "--shutdown-token", "tok"], driver)
+    r = res["hello"]["result"]
+    assert r["server"] == server.SERVER_NAME and "vrx_inplace_mode_filter" in r["features"], r
+    assert set(r["build"]) == {"git", "script_mtime_utc", "started_utc"}, r["build"]
+    assert "vrx_inplace_mode_filter" in res["caps"]["result"]["features"], res["caps"]
+    print(f"  hello: {r['server']}, build git={r['build']['git']}, features include vrx_inplace_mode_filter  OK")
+
+    out = out_buf.getvalue().splitlines()
+    build_lines = [ln for ln in out if ln.startswith("hf-sdr-server: build ")]
+    banner = [ln for ln in out if ln.startswith("hf-sdr-server: control")]
+    assert len(build_lines) == 1 and "features=" in build_lines[0], out
+    assert len(banner) == 1, out
+    assert not build_lines[0].startswith("hf-sdr-server: control"), "build line must not be mistaken for the banner"
+    assert out.index(build_lines[0]) < out.index(banner[0]), "build line should precede the banner"
+    print("  startup prints one build line before the readiness banner, distinct from it  OK")
+
+
 if __name__ == "__main__":
+    test_build_and_features()
     test_stall_monitor()
     test_publisher_drop_counter()
     test_port_clash()

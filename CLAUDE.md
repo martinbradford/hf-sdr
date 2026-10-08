@@ -149,7 +149,13 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
        click ≈ 2–4× a normal sample jump, measured crudely). Live listening: much better than before but a **brief (sub-second) audio break and
        waterfall freeze remain**, cause unknown. Planned split test (after the shack PC memory upgrade): switch sideband with
        `ctl.py update_vrx vrx_id=<id> mode=lsb` instead of the client; freeze persists = server-side, absent = client-side (the client also resends `freq_hz`).
-       **Update 2026-10-08 (later):** BW changes show the same sub-second audio+waterfall pause. The extended `test_sideband_flowgraph.py` (with and
+       **ROOT CAUSE CANDIDATE (2026-10-08):** the live server had never been restarted onto the new code. `ctl.py update_vrx mode=usb` returned `mode: lsb` (ignored), and
+       the VRX id had reached 22 (each remove+add bumps it): every client sideband/BW change was silently falling back to remove + add. A `git pull` does not change a
+       running server; **restart it (`sup_ctl.py stop` then `start`, using the radioconda python) after every pull**. To stop this recurring, `hello` now returns `build`
+       (git commit/script mtime/start time of the running process) and `features` (incl. `vrx_inplace_mode_filter`); the server prints a `hf-sdr-server: build ...` line at
+       start; the client shows the build on connect, warns if the flag is missing, says so in the status line when it falls back to remove + add, and logs build/inplace in
+       the `SESSION START` line. **Retest the sideband/BW pause on a freshly restarted server before using the stall monitor.**
+       **Update 2026-10-08 (later):** BW changes showed the same sub-second audio+waterfall pause (probably the fallback above). The extended `test_sideband_flowgraph.py` (with and
        without `--with-freq`) passed with `update_vrx` taking 0.1 ms and pauses ≤32 ms, so neither the tap swap nor re-sending the frequency is the
        cause; it is something only the live system has (RSP source, spectrum chain, or the client). **Stall monitor added** (server `--debug-stalls`
        / env `HF_SDR_DEBUG_STALLS=1`, `--stall-ms`, default 80): logs to stderr with ms stamps any gap in the spectrum/audio sinks' `work()`, a late

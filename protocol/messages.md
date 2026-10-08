@@ -83,7 +83,7 @@ Every reply:
 
 | cmd | params | result |
 |-----|--------|--------|
-| `hello` | `protocol_version`, `client` | `protocol_version`, `server` |
+| `hello` | `protocol_version`, `client` | `protocol_version`, `server`, `build` (`{git, script_mtime_utc, started_utc}`: the commit and script the process **started** from, since a later `git pull` does not change a running process; `git` is null if unavailable and gets `+modified` for a dirty tree), `features` (same list as `get_capabilities`) |
 | `get_status` | – | full state snapshot (§4.7) |
 | `get_capabilities` | – | supported modes/features (§4.8) |
 | `shutdown` | `{ "token": <str> }` | Reply `{ "stopping": true }` is sent **before** teardown; the server then exits through the normal device-deinit path. Refused with `bad_request` unless the server was started with `--shutdown-token` (or env `HF_SDR_SHUTDOWN_TOKEN`) and `token` matches — so only the launching process can stop it. See `server_lifecycle.md` §4.1. |
@@ -170,7 +170,7 @@ network/subscriber, not the server (see `bandwidth_design.md` §6).
   "sample_rates_hz": [2000000],
   "audio_rate_hz": 48000,
   "audio_formats": ["int16", "f32"],
-  "features": ["diversity", "diversity_null", "multi_vrx", "noise_blanker", "notch"]
+  "features": ["diversity", "diversity_null", "multi_vrx", "vrx_inplace_mode_filter", "noise_blanker", "notch"]
 }
 ```
 

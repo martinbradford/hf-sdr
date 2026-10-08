@@ -103,7 +103,8 @@ public partial class MainWindow : Window
     {
         _sessionStart = DateTime.Now;
         AudioEventLog.Append($"SESSION START  host={_settings.Host}  supervisor={_settings.UseSupervisor}  " +
-                             $"AudioPrimeMs={Math.Clamp(_settings.AudioPrimeMs, 0, 300)}");
+                             $"AudioPrimeMs={Math.Clamp(_settings.AudioPrimeMs, 0, 300)}  " +
+                             $"server build={(_serverBuild.Length > 0 ? _serverBuild : "unknown")}  inplace={_serverInPlace}");
     }
 
     /// <summary>Write the end line with the run length and final counters. Safe to call more than once.</summary>
@@ -399,13 +400,22 @@ public partial class MainWindow : Window
             _client.AudioReceived += OnAudio;
 
             JsonElement status = default;
+            bool inPlace = false;
+            string build = "";
             string server = await Task.Run(() =>
             {
                 _client.Connect(host, controlPort, streamPort, audioPort);
                 var hello = _client.Send("hello", new { protocol_version = "0.1", client = "HfSdr.App/0.1" });
                 status = _client.Send("get_status");
+                inPlace = hello.TryGetProperty("features", out var fe) && fe.ValueKind == JsonValueKind.Array
+                          && fe.EnumerateArray().Any(x => x.GetString() == InPlaceFeature);
+                if (hello.TryGetProperty("build", out var b) && b.ValueKind == JsonValueKind.Object
+                    && b.TryGetProperty("git", out var g) && g.ValueKind == JsonValueKind.String)
+                    build = g.GetString() ?? "";
                 return hello.GetProperty("server").GetString() ?? "?";
             });
+            _serverInPlace = inPlace;
+            _serverBuild = build;
 
             StartAudioOut();
             StartAudioStatsTimer();
@@ -414,7 +424,9 @@ public partial class MainWindow : Window
             ApplyStatus(status);
             ConfigBar.IsEnabled = true;
             StopRxBtn.IsEnabled = _supervisor is not null;
-            StatusText.Text = $"Connected to {server} on {host}. Click the waterfall to tune a receiver.";
+            StatusText.Text = $"Connected to {server}{(build.Length > 0 ? $" (build {build})" : "")} on {host}. " +
+                              "Click the waterfall to tune a receiver." +
+                              (inPlace ? "" : "  ⚠ This server predates in-place sideband/bandwidth changes: those will pause. Restart it to get the new code.");
             LogSessionStart();                                // only once fully connected, so every start has an end
         }
         catch (Exception ex)
@@ -638,6 +650,12 @@ public partial class MainWindow : Window
 
     // ---- audio bandwidth (passband width) ------------------------------
     private int _vrxLow, _vrxHigh;      // passband edges of the running VRX; 0,0 = unknown
+
+    // What the connected server told us in `hello`. A server that predates in-place sideband/bandwidth
+    // changes lacks the feature flag; we then skip the doomed update_vrx and say why it pauses.
+    private const string InPlaceFeature = "vrx_inplace_mode_filter";
+    private bool _serverInPlace;
+    private string _serverBuild = "";
     // Guard: programmatic dropdown changes must not send or overwrite the saved width. Starts true
     // because InitializeComponent fires a selection event before the saved value is applied;
     // SelectBandwidth() in the constructor clears it.
@@ -681,6 +699,7 @@ public partial class MainWindow : Window
         _busy = true;
         int bw = SelectedBandwidthHz();                          // read the UI here, not on the worker thread
         var (lo, hi) = Passband.Edges(mode, bw);
+        string? fellBackWhy = null;             // set when we had to use remove + add (a pause)
         try
         {
             await Task.Run(() =>
@@ -688,26 +707,35 @@ public partial class MainWindow : Window
                 if (_vrxId != null && (mode != _vrxMode || lo != _vrxLow || hi != _vrxHigh))
                 {
                     // Preferred: change sideband and/or passband in place on the server (a filter tap
-                    // swap, no gap). A server that predates this echoes the old values back, and a mode
-                    // needing a different demodulator is refused as "unsupported"; in both cases fall
-                    // back to remove + add (a brief gap, but it always works).
-                    try
+                    // swap, no gap). Skipped for a server that does not advertise the feature (it would
+                    // ignore the request). If the server refuses ("unsupported", e.g. a mode needing a
+                    // different demodulator) or does not apply it, fall back to remove + add: a brief
+                    // gap, but it always works, and we say so rather than failing silently.
+                    if (_serverInPlace)
                     {
-                        var res = _client.Send("update_vrx", new
+                        try
                         {
-                            vrx_id = _vrxId.Value, freq_hz = freq, mode,
-                            filter = new { low_hz = lo, high_hz = hi }
-                        });
-                        if (ReplyMatches(res, mode, lo, hi))
+                            var res = _client.Send("update_vrx", new
+                            {
+                                vrx_id = _vrxId.Value, freq_hz = freq, mode,
+                                filter = new { low_hz = lo, high_hz = hi }
+                            });
+                            if (ReplyMatches(res, mode, lo, hi))
+                            {
+                                _vrxMode = mode;
+                                (_vrxLow, _vrxHigh) = (lo, hi);
+                                return;
+                            }
+                            fellBackWhy = "the server did not apply the in-place change";
+                        }
+                        catch (InvalidOperationException ex) when (ex.Message.StartsWith("unsupported", StringComparison.Ordinal))
                         {
-                            _vrxMode = mode;
-                            (_vrxLow, _vrxHigh) = (lo, hi);
-                            return;
+                            fellBackWhy = "the server refused the in-place change";
                         }
                     }
-                    catch (InvalidOperationException ex) when (ex.Message.StartsWith("unsupported", StringComparison.Ordinal))
+                    else
                     {
-                        // fall through to remove + add
+                        fellBackWhy = "this server predates in-place changes; restart it";
                     }
                     _client.Send("remove_vrx", new { vrx_id = _vrxId.Value });
                     _vrxId = null;
@@ -730,7 +758,8 @@ public partial class MainWindow : Window
             });
             _vrxFreq = freq;
             UpdateMarker();
-            StatusText.Text = $"VRX @ {freq / 1e6:F4} MHz ({mode.ToUpper()}, {bw / 1000.0:0.0} kHz) — listening";
+            StatusText.Text = $"VRX @ {freq / 1e6:F4} MHz ({mode.ToUpper()}, {bw / 1000.0:0.0} kHz) — listening" +
+                              (fellBackWhy is null ? "" : $"  ⚠ used remove + add ({fellBackWhy}); expect a pause");
         }
         catch (Exception ex)
         {
