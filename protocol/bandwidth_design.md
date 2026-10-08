@@ -169,7 +169,59 @@ possibly-audible gap. Buffered audio at those moments was 0-63 ms: playback ran 
 
 Note the existing `resync` is not a metric only: clearing up to 400 ms of audio to catch up is an
 audible glitch in its own right, and may be responsible for some of the reported dropouts after a
-Wi-Fi stall. The counters will show whether it is.
+Wi-Fi stall. The counters will show whether it is. (In the Wi-Fi runs below `resync` stayed 0.)
+
+### 6.1 Wi-Fi results (2026-10-08, laptop client over Wi-Fi to the shack PC via the supervisor)
+
+One run per cushion setting; durations are approximate and the runs were **not** tightly
+controlled (no deliberate load, laptop near-idle with a little web browsing), so treat the figures
+as indicative. Audio sounded smooth in all but was only listened to informally.
+
+| `AudioPrimeMs` | Duration | lost | late | dry reads | silence | longest gap | buffered level |
+|----------------|----------|------|------|-----------|---------|-------------|----------------|
+| 0 | ~90 s | 0 | 10 | 8 (4 at connect) | 46 ms | 285 ms | 119-256 ms after stalls |
+| 80 | ~13.5 min | 0 | 27 | 6 (5 in the first ~15 s) | 48 ms | 255 ms | ~200-260 ms |
+| 250 | ~10 min | 0 | 49 | **0** | 0 ms | 274 ms | ~225-270 ms |
+
+`resync` was 0 in every run.
+
+What this shows:
+
+- **Nothing is lost; the link delivers late.** `lost` is 0 and the stalls are 100-285 ms bursts, so
+  this is jitter, not bandwidth. Compressing the streams would not have helped this symptom.
+- **The buffer ratchets up on its own.** After a stall the burst delivers all the delayed audio but
+  playback is real-time, so the delay stays as extra latency (the buffer climbs to about the longest
+  stall seen and stays there). Even with the cushion at 0 or 80, the buffer settled near 250 ms
+  within minutes, which then protected against repeats; the dry reads occurred while it was still
+  climbing.
+- **250 ms removes the glitches** (dry 0 over ~10 min, despite 49 late events and stalls up to
+  274 ms) and costs about the same steady-state latency the other settings drift to anyway, but
+  ~170 ms more than 80 does at the start of a session.
+- A 100 ms "late" threshold is, by construction, longer than an 80 ms cushion can cover, so with
+  that setting dry reads are expected until the buffer has ratcheted up.
+- **Stalls are not periodic** across runs (an early guess of ~5-6 minute spacing did not hold).
+
+**Recommendation:** `AudioPrimeMs` = 250 for Wi-Fi clients; keep the default of 80 for wired or
+colocated use, where there is almost no jitter and 250 would only add delay. Possible later
+improvement: a cushion that adapts to the link, or a UI selector.
+
+**Where the stalls come from (not yet determined).** The Windows WLAN report for the laptop shows an
+excellent link (5 GHz channel 40, 802.11ax, -39 dBm, 1201 Mbps) and **no disconnects, roams or
+reassociations** during the tests (it does not record background scans or airtime contention). The
+shack PC side is clean: colocated on the shack PC the same counters read late 0 (longest gap
+45-52 ms). Topology: the laptop is on the Living Room mesh node, which reaches the master (in the
+shack) by **wireless backhaul**; the shack PC is wired (1G) to a switch to the pfSense router, and
+the master AP is also wired to that switch. A wireless backhaul shares airtime and is the leading
+suspect, but that is a hypothesis. Untried tests, cheapest first:
+
+1. Put the laptop next to the master AP (wired uplink) and repeat: stalls vanishing would implicate
+   the node-to-master backhaul.
+2. Run `ping -t` with timestamps from the laptop to the router and to the shack PC at the same time
+   and compare spikes against the `late` timestamps in `audio-events.log` (both spike = laptop/mesh
+   leg; only the shack PC = beyond the master).
+3. Laptop on a wired connection, if possible.
+4. Check whether the shack PC is on the same subnet as the laptop (192.168.4.x). If it is routed
+   through pfSense, anything inspecting traffic there could add jitter.
 
 ## 7. Suggested order
 

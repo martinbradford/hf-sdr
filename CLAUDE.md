@@ -124,7 +124,12 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
        0/0/0/0 on a clean link, then watch it during real dropouts (see `protocol/bandwidth_design.md` §6).
        First colocated run showed `dry` was mostly start-up and sub-ms noise, so the metric was tightened and a
        playback jitter cushion added (`AudioPrimeMs`, default 80 ms, in `settings.json`; costs that much latency).
-       Wi-Fi effect of the cushion not yet tested.
+       **Wi-Fi results (2026-10-08, laptop → shack PC, ~10 min runs):** lost 0 and resync 0 throughout; the link
+       delivers late, not lossy (stalls 100–285 ms in bursts). Cushion 250 ms gave `dry 0`; 0 and 80 gave a handful of
+       dry reads while the buffer ratcheted up to ~250 ms on its own. **Use `AudioPrimeMs` 250 on Wi-Fi clients, keep 80
+       for wired/colocated.** Stall source not yet found: laptop link is excellent and shows no roams; leading suspect is
+       the mesh's wireless backhaul (Living Room node → master). Details and untried tests: `protocol/bandwidth_design.md` §6.1.
+       The laptop's `settings.json` currently has 250.
      - **Done:** lazy-pirate in `SdrClient.Send` (a timed-out control request now replaces the wedged REQ socket; not retried). **Not started:** §4.4 client-side Job Object (only needed for local `spawn` mode).
      - Open check for the service: run as LocalSystem first (§12.6) — verify it can read
        radioconda and import `gnuradio.sdrplay3`; else log on as the owner's account.
