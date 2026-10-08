@@ -10,7 +10,7 @@ namespace HfSdr.App;
 public readonly record struct AudioStatsSnapshot(
     long Frames, long LostFrames, long GapEvents, long SeqResets,
     long Stalls, double MaxGapMs,
-    long Underruns, double UnderrunMs,
+    long Underruns, double UnderrunMs, long MicroShortfalls,
     long Resyncs, double DiscardedMs);
 
 /// <summary>
@@ -19,7 +19,10 @@ public readonly record struct AudioStatsSnapshot(
 ///            server's send queue, or by ZeroMQ when the link couldn't keep up).
 ///   Late   : the frame arrived, but the gap since the previous one exceeded <see cref="StallMs"/>
 ///            (Wi-Fi/TCP stall followed by a burst). Not lost, but it can still starve playback.
-///   Dry    : playback asked for more audio than was buffered, so silence was inserted.
+///   Dry    : playback ran out of audio for at least <see cref="DryThresholdMs"/> and silence was
+///            inserted. Only counted if audio then resumes (see <see cref="OnDryRead"/>), so the
+///            end of a stream is not reported as a glitch.
+///   Micro  : a shortfall under <see cref="DryThresholdMs"/> (a few samples). Tracked, not alarming.
 ///   Resync : the backlog grew past the cap and was discarded to get back to real time.
 /// Thread-safe: frames arrive on the network thread, playback reads on the audio thread.
 /// </summary>
@@ -27,17 +30,21 @@ public sealed class AudioStats
 {
     /// <summary>Inter-arrival gap treated as a stall. Normal frames are ~20 ms apart.</summary>
     public const double StallMs = 100;
-    /// <summary>Audio "is flowing" if a frame arrived within this long; gates dry-read counting so an
-    /// idle receiver (no VRX, nothing to play) is not reported as a stream of underruns.</summary>
-    private const double ActiveWindowMs = 1000;
+    /// <summary>Smallest inserted silence counted as a dry read; shorter shortfalls are "micro".</summary>
+    public const double DryThresholdMs = 2;
+    /// <summary>A dry read is confirmed if a frame arrives within this long afterwards.</summary>
+    private const double CommitWindowMs = 1000;
 
     private readonly Func<double> _nowMs;
     private readonly object _lock = new();
     private readonly Dictionary<int, (long Seq, double AtMs)> _last = new();
-    private double _lastAnyMs = double.NegativeInfinity;
 
-    private long _frames, _lostFrames, _gapEvents, _seqResets, _stalls, _underruns, _resyncs;
+    private long _frames, _lostFrames, _gapEvents, _seqResets, _stalls, _underruns, _micro, _resyncs;
     private double _maxGapMs, _underrunMs, _discardedMs;
+
+    // Dry reads wait here until audio resumes; if it never does the stream simply ended.
+    private long _pendDry;
+    private double _pendDryMs, _pendAtMs = double.NegativeInfinity;
 
     public AudioStats() : this(null) { }
 
@@ -55,7 +62,14 @@ public sealed class AudioStats
         lock (_lock)
         {
             _frames++;
-            _lastAnyMs = now;
+
+            // Audio resumed shortly after playback ran dry: that was a real glitch, not a stream end.
+            if (_pendDry > 0)
+            {
+                if (now - _pendAtMs <= CommitWindowMs) { _underruns += _pendDry; _underrunMs += _pendDryMs; }
+                _pendDry = 0; _pendDryMs = 0;
+            }
+
             if (_last.TryGetValue(vrxId, out var prev))
             {
                 // Only compare against the same VRX: a freshly added VRX has no baseline, so the
@@ -71,16 +85,22 @@ public sealed class AudioStats
         }
     }
 
-    /// <summary>True while audio frames are arriving (used to ignore idle underruns).</summary>
-    public bool StreamActive
-    {
-        get { lock (_lock) return _nowMs() - _lastAnyMs < ActiveWindowMs; }
-    }
-
-    /// <summary>Playback was handed <paramref name="silenceMs"/> of inserted silence (audio thread).</summary>
+    /// <summary>Playback was handed <paramref name="silenceMs"/> (>= <see cref="DryThresholdMs"/>) of
+    /// inserted silence (audio thread). Held as pending until the next frame confirms audio resumed.</summary>
     public void OnDryRead(double silenceMs)
     {
-        lock (_lock) { _underruns++; _underrunMs += silenceMs; }
+        double now = _nowMs();
+        lock (_lock)
+        {
+            if (_pendDry > 0 && now - _pendAtMs > CommitWindowMs) { _pendDry = 0; _pendDryMs = 0; }
+            _pendDry++; _pendDryMs += silenceMs; _pendAtMs = now;
+        }
+    }
+
+    /// <summary>A shortfall below <see cref="DryThresholdMs"/>: a few padded samples.</summary>
+    public void OnMicroShortfall()
+    {
+        lock (_lock) _micro++;
     }
 
     /// <summary>The backlog was cleared; <paramref name="discardedMs"/> of audio was thrown away.</summary>
@@ -93,40 +113,72 @@ public sealed class AudioStats
     {
         lock (_lock)
             return new(_frames, _lostFrames, _gapEvents, _seqResets, _stalls, _maxGapMs,
-                       _underruns, _underrunMs, _resyncs, _discardedMs);
+                       _underruns, _underrunMs, _micro, _resyncs, _discardedMs);
     }
 }
 
 /// <summary>
-/// Wraps the playback buffer and records every read that had to be padded with silence.
-/// Behaviour is unchanged: the read is delegated untouched (BufferedWaveProvider pads with zeros
-/// itself); we only look at how much was buffered first. Any padding ends up in the audible stream,
-/// so this counts real glitches regardless of how the output API chunks its reads.
+/// The playback side of the audio path: a small jitter cushion plus glitch metering, wrapped around
+/// the <see cref="BufferedWaveProvider"/> the output reads from.
+///
+/// Priming: until at least <c>primeMs</c> of audio is buffered, reads return silence WITHOUT
+/// consuming anything, so the buffer fills to a cushion first. Steady state then holds roughly that
+/// much audio, which absorbs network jitter up to the cushion size. After a real dry spell it
+/// re-primes the same way. The price is <c>primeMs</c> of extra latency; 0 disables the cushion.
+///
+/// Metering: a shortfall (playback wanted more than was buffered) is padded with silence exactly as
+/// BufferedWaveProvider's ReadFully would. Padding of at least <see cref="AudioStats.DryThresholdMs"/>
+/// is reported as a dry read; smaller ones as micro shortfalls. Reads while priming are not glitches
+/// and are not counted.
 /// </summary>
-public sealed class MeteredWaveProvider : IWaveProvider
+public sealed class PrimedWaveProvider : IWaveProvider
 {
     private readonly BufferedWaveProvider _inner;
     private readonly Func<AudioStats> _stats;
+    private readonly Func<int> _primeMs;
+    private bool _primed;
 
     /// <param name="stats">Resolved on every read, so a reconnect that swaps the stats object is followed.</param>
-    public MeteredWaveProvider(BufferedWaveProvider inner, Func<AudioStats> stats)
+    /// <param name="primeMs">Cushion in ms, read on every call so a settings change applies live.</param>
+    public PrimedWaveProvider(BufferedWaveProvider inner, Func<AudioStats> stats, Func<int> primeMs)
     {
         _inner = inner;
         _stats = stats;
+        _primeMs = primeMs;
     }
 
     public WaveFormat WaveFormat => _inner.WaveFormat;
 
     public int Read(byte[] buffer, int offset, int count)
     {
+        double bytesPerMs = _inner.WaveFormat.AverageBytesPerSecond / 1000.0;
         int have = _inner.BufferedBytes;
+
+        if (!_primed)
+        {
+            int block = _inner.WaveFormat.BlockAlign;
+            int need = (int)(Math.Max(0, _primeMs()) * bytesPerMs);
+            need = Math.Max(need, count) / block * block;            // at least this read, block-aligned
+            if (have < need)
+            {
+                Array.Clear(buffer, offset, count);                  // cushion still filling: play silence
+                return count;
+            }
+            _primed = true;
+        }
+
         if (have < count)
         {
+            double silenceMs = (count - have) / bytesPerMs;
             var s = _stats();
-            if (s.StreamActive)
-                s.OnDryRead((count - have) * 1000.0 / _inner.WaveFormat.AverageBytesPerSecond);
+            if (silenceMs >= AudioStats.DryThresholdMs)
+            {
+                s.OnDryRead(silenceMs);
+                _primed = false;                                      // real dry spell: rebuild the cushion
+            }
+            else s.OnMicroShortfall();
         }
-        return _inner.Read(buffer, offset, count);
+        return _inner.Read(buffer, offset, count);                    // pads any shortfall with silence
     }
 }
 

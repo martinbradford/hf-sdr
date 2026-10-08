@@ -144,7 +144,7 @@ as a readout beside the peak meter (tooltip has detail), plus a log at
 |---------|---------|-----------|
 | **lost** | frames missing from the per-VRX `seq` | frame never arrived: server queue or ZeroMQ drop |
 | **late** | gap between frames > 100 ms (no loss) | Wi-Fi/TCP stall then burst: needs a deeper buffer |
-| **dry** | playback read padded with silence (count, ms) | what you actually *hear*; follows from late or lost |
+| **dry** | playback read padded with at least 2 ms of silence (count, ms) | what you actually *hear*; follows from late or lost |
 | **resync** | backlog > 400 ms discarded (count, ms) | the existing catch-up clear; itself an audible jump |
 
 Server side, `get_status` reports `streaming.dropped_frames` (frames dropped in the server's own
@@ -152,6 +152,20 @@ send queue). Reading the two together: lost > 0 with `dropped_frames` == 0 means
 after the server queue (network or subscriber); lost > 0 matching `dropped_frames` means the server
 could not keep up. Caveats: a new VRX or a seq restart is not counted as loss or lateness; and the
 100 ms stall threshold is a first guess, to be tuned once real numbers exist.
+
+**First colocated run (2026-10-08) and what changed.** With the link clean (lost 0, late 0, resync
+0, longest inter-frame gap 45-52 ms) the readout still showed `dry 16`. The event log showed ~155 ms
+of that was the start-up moment (playback began before any audio was buffered) and most of the rest
+were shortfalls of a fraction of a millisecond (a few samples); one 22 ms event was the only
+possibly-audible gap. Buffered audio at those moments was 0-63 ms: playback ran nearly empty. So:
+
+- **Metric fixed.** A dry read is counted only if the silence is at least 2 ms *and* audio resumes
+  within 1 s (so the end of a stream is not a "glitch"); smaller shortfalls are tracked separately as
+  `micro` (tooltip only), and reads while the cushion is filling are not counted at all.
+- **Playback cushion added** (`PrimedWaveProvider`): playback is held until `AudioPrimeMs` (default
+  80, client `settings.json`, 0-300, 0 = off) of audio is buffered, and re-primes after a real dry
+  spell. It costs that much extra latency and absorbs jitter up to that size. Tune it from the log:
+  if `dry` still appears over Wi-Fi, raise it; if the extra latency bothers you (FT8 DT), lower it.
 
 Note the existing `resync` is not a metric only: clearing up to 400 ms of audio to catch up is an
 audible glitch in its own right, and may be responsible for some of the reported dropouts after a

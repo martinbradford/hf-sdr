@@ -122,6 +122,9 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
        client readout `audio lost/late/dry/resync` (`AudioStats.cs`, tooltip + `%APPDATA%\HfSdr\audio-events.log`) and server
        `get_status` → `streaming.dropped_frames`. TODO at the machines: connect over Wi-Fi, confirm the readout stays
        0/0/0/0 on a clean link, then watch it during real dropouts (see `protocol/bandwidth_design.md` §6).
+       First colocated run showed `dry` was mostly start-up and sub-ms noise, so the metric was tightened and a
+       playback jitter cushion added (`AudioPrimeMs`, default 80 ms, in `settings.json`; costs that much latency).
+       Wi-Fi effect of the cushion not yet tested.
      - **Done:** lazy-pirate in `SdrClient.Send` (a timed-out control request now replaces the wedged REQ socket; not retried). **Not started:** §4.4 client-side Job Object (only needed for local `spawn` mode).
      - Open check for the service: run as LocalSystem first (§12.6) — verify it can read
        radioconda and import `gnuradio.sdrplay3`; else log on as the owner's account.

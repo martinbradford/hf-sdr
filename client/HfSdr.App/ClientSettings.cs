@@ -16,6 +16,9 @@ public sealed class ClientSettings
     /// <summary>Opt-in: stop the remote receiver when the window closes. Off by default because another
     /// client may be using it, or the user may want it left running (design §12.7).</summary>
     public bool ReleaseOnClose { get; set; }
+    /// <summary>Playback jitter cushion in ms (0-300): audio is held until this much is buffered, trading
+    /// that much latency for resilience to network jitter. 0 disables it. Edit settings.json to tune.</summary>
+    public int AudioPrimeMs { get; set; } = 80;
 
     private static string PathFile => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "HfSdr", "settings.json");

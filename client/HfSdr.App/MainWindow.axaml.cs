@@ -84,7 +84,8 @@ public partial class MainWindow : Window
         };
         // Shared mode; NAudio resamples our 48k/16/mono buffer to the endpoint's mix format.
         _waveOut = new WasapiOut(SelectedRenderDevice(), AudioClientShareMode.Shared, true, 150);
-        _waveOut.Init(new MeteredWaveProvider(_audioBuf, () => _client.Audio));
+        _waveOut.Init(new PrimedWaveProvider(_audioBuf, () => _client.Audio,
+                                             () => Math.Clamp(_settings.AudioPrimeMs, 0, 300)));
         _waveOut.Play();
     }
 
@@ -113,7 +114,9 @@ public partial class MainWindow : Window
         ToolTip.SetTip(AudioStatsLabel,
             $"lost  = frames missing from the sequence ({s.GapEvents} gap(s)); never arrived\n" +
             $"late  = {s.Stalls} stall(s) of >{AudioStats.StallMs:0} ms between frames (max gap {s.MaxGapMs:0} ms)\n" +
-            $"dry   = {s.Underruns} playback read(s) padded with silence ({s.UnderrunMs:0} ms total)\n" +
+            $"dry   = {s.Underruns} playback read(s) padded with >= {AudioStats.DryThresholdMs:0} ms of silence ({s.UnderrunMs:0} ms total)\n" +
+            $"micro = {s.MicroShortfalls} shortfall(s) under {AudioStats.DryThresholdMs:0} ms (a few samples; ignored)\n" +
+            $"cushion = {Math.Clamp(_settings.AudioPrimeMs, 0, 300)} ms (AudioPrimeMs in settings.json)\n" +
             $"resync= {s.Resyncs} backlog discard(s) ({s.DiscardedMs:0} ms of audio dropped)\n" +
             $"frames={s.Frames}  seq resets={s.SeqResets}  buffered now={bufMs:0} ms\n" +
             $"Events are logged to {AudioEventLog.PathFile}");
