@@ -12,6 +12,7 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
 **Read these first:**
 - [`docs/SDR_PROJECT_CONTEXT.md`](docs/SDR_PROJECT_CONTEXT.md) — full design & architecture
 - [`docs/SETUP_NOTES.md`](docs/SETUP_NOTES.md) — environment, machine-specific gotchas, corrections to the context doc
+- [`docs/PORTING.md`](docs/PORTING.md) — Linux/macOS assessment (nothing run off Windows yet); read before any non-Windows work
 - [`README.md`](README.md) — overview + live status
 
 ## Environment (Windows 11, "Shack PC" with the RSP Duo attached)
@@ -144,6 +145,11 @@ for Stage 4+. Commit both `.grc` and generated `.py`.
   `... ctl.py set_tuner_mode mode=diversity` | `... ctl.py set_gain rf_gr_db=0` |
   `... ctl.py null_signal center_hz=14005000 width_hz=12000` (diversity: null a
   source; watch `null_depth_db` climb) | `... ctl.py null_signal clear=true`
+- Reliability cycles (both need hardware; not the same thing):
+  `server\python\headless\cycle_test.py --cycles 10` flips **single↔diversity** on a running
+  server and checks the mode and that spectrum frames flow (written but not yet run on
+  hardware, so no baseline); `supervisor\tools\cycle.py <single|diversity> <n>` cycles the
+  **supervisor's start/stop** (the server being launched and shut down).
 - Any PoC: `C:\Users\MABY\radioconda\python.exe server\python\poc\<script>.py --help`
 - DSP without hardware: run `test_combiner.py`. `dotnet build client\HfSdr.App`
   compiles the client here. Hardware tests via Claude Code need `dangerouslyDisableSandbox: true`.

@@ -36,7 +36,12 @@ Do this before any porting work. It needs no C# at all.
    restart immediately, repeat about 10 times in each mode (design: `protocol/server_lifecycle.md`
    section 12.9). Use a non-numeric, non-bool token (`ctl.py` JSON-parses values).
 
-On the Windows shack PC these cycles passed 10/10 in both modes. Compare against that.
+Windows baseline, so you know what to compare against: the shutdown/restart cycle (step 5) and
+the supervisor `start`/`stop` cycles (`supervisor/tools/cycle.py`) each passed 10/10 in single and in
+diversity on the shack PC. **`cycle_test.py` itself (step 4) has not yet been run on real hardware,
+even on Windows**, so it has no baseline; CLAUDE.md gotcha #3 says live single <-> diversity switching
+works repeatably but with occasional graceful-degradation failures. Run it on the shack PC first to
+establish what "normal" looks like before judging a result from another OS.
 
 ## 3. Work list (code)
 
