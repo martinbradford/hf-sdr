@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Avalonia.Controls;
@@ -47,6 +48,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         PopulateAudioDevices();
+        SelectBandwidth(_settings.BandwidthHz);
         HostBox.Text = _settings.Host;
         SupervisorBox.IsChecked = _settings.UseSupervisor;
         ReleaseBox.IsChecked = _settings.ReleaseOnClose;
@@ -327,6 +329,7 @@ public partial class MainWindow : Window
     private void AdoptVrx(JsonElement st)
     {
         _vrxId = null;
+        (_vrxLow, _vrxHigh) = (0, 0);
         if (st.TryGetProperty("vrx", out var arr) && arr.ValueKind == JsonValueKind.Array
             && arr.GetArrayLength() > 0)
         {
@@ -334,6 +337,13 @@ public partial class MainWindow : Window
             _vrxId = v.GetProperty("vrx_id").GetInt32();
             _vrxFreq = v.GetProperty("freq_hz").GetInt64();
             _vrxMode = v.GetProperty("mode").GetString() ?? "lsb";
+            if (v.TryGetProperty("filter", out var f)
+                && f.TryGetProperty("low_hz", out var l) && f.TryGetProperty("high_hz", out var h))
+            {
+                _vrxLow = (int)Math.Round(l.GetDouble());
+                _vrxHigh = (int)Math.Round(h.GetDouble());
+                SelectBandwidth(_vrxHigh - _vrxLow);       // show what the server is actually doing
+            }
         }
         UpdateMarker();
     }
@@ -626,26 +636,72 @@ public partial class MainWindow : Window
         await SetVrx(_vrxFreq, mode);
     }
 
+    // ---- audio bandwidth (passband width) ------------------------------
+    private int _vrxLow, _vrxHigh;      // passband edges of the running VRX; 0,0 = unknown
+    // Guard: programmatic dropdown changes must not send or overwrite the saved width. Starts true
+    // because InitializeComponent fires a selection event before the saved value is applied;
+    // SelectBandwidth() in the constructor clears it.
+    private bool _suppressBw = true;
+
+    private int SelectedBandwidthHz() =>
+        BwBox.SelectedItem is ComboBoxItem { Tag: string t } && int.TryParse(t, out var hz) ? hz : Passband.DefaultWidthHz;
+
+    /// <summary>Show a width in the dropdown without triggering a send. No-op if it isn't a preset.</summary>
+    private void SelectBandwidth(int widthHz)
+    {
+        _suppressBw = true;
+        try
+        {
+            foreach (var item in BwBox.Items.OfType<ComboBoxItem>())
+                if (item.Tag is string t && t == widthHz.ToString()) { BwBox.SelectedItem = item; return; }
+        }
+        finally { _suppressBw = false; }
+    }
+
+    /// <summary>Bandwidth dropdown changed: apply to the running receiver now (in place, no gap).</summary>
+    private async void OnBandwidthChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressBw) return;
+        _settings.BandwidthHz = SelectedBandwidthHz();          // saved with the other settings
+        if (!_connected || _vrxId is null || _busy) return;
+        await SetVrx(_vrxFreq, _vrxMode);
+    }
+
+    /// <summary>True if an update_vrx reply shows the server really applied this mode and passband.
+    /// A server that predates in-place changes ignores them and echoes the old values back.</summary>
+    private static bool ReplyMatches(JsonElement res, string mode, int lo, int hi) =>
+        res.TryGetProperty("mode", out var m) && m.GetString() == mode
+        && res.TryGetProperty("filter", out var f)
+        && f.TryGetProperty("low_hz", out var l) && f.TryGetProperty("high_hz", out var h)
+        && Math.Abs(l.GetDouble() - lo) < 0.5 && Math.Abs(h.GetDouble() - hi) < 0.5;
+
     private async Task SetVrx(long freq, string mode)
     {
         if (!_connected || _busy) return;
         _busy = true;
+        int bw = SelectedBandwidthHz();                          // read the UI here, not on the worker thread
+        var (lo, hi) = Passband.Edges(mode, bw);
         try
         {
             await Task.Run(() =>
             {
-                if (_vrxId != null && mode != _vrxMode)
+                if (_vrxId != null && (mode != _vrxMode || lo != _vrxLow || hi != _vrxHigh))
                 {
-                    // Preferred: change sideband in place on the server (a filter tap swap, no gap).
-                    // A server that predates this ignores "mode" and echoes the old one back, and a
-                    // mode needing a different demodulator is refused as "unsupported"; in both
-                    // cases fall back to remove + add (a brief gap, but it always works).
+                    // Preferred: change sideband and/or passband in place on the server (a filter tap
+                    // swap, no gap). A server that predates this echoes the old values back, and a mode
+                    // needing a different demodulator is refused as "unsupported"; in both cases fall
+                    // back to remove + add (a brief gap, but it always works).
                     try
                     {
-                        var res = _client.Send("update_vrx", new { vrx_id = _vrxId.Value, freq_hz = freq, mode });
-                        if (res.TryGetProperty("mode", out var m) && m.GetString() == mode)
+                        var res = _client.Send("update_vrx", new
+                        {
+                            vrx_id = _vrxId.Value, freq_hz = freq, mode,
+                            filter = new { low_hz = lo, high_hz = hi }
+                        });
+                        if (ReplyMatches(res, mode, lo, hi))
                         {
                             _vrxMode = mode;
+                            (_vrxLow, _vrxHigh) = (lo, hi);
                             return;
                         }
                     }
@@ -658,9 +714,14 @@ public partial class MainWindow : Window
                 }
                 if (_vrxId == null)
                 {
-                    var res = _client.Send("add_vrx", new { freq_hz = freq, mode, volume = 0.6 });
+                    var res = _client.Send("add_vrx", new
+                    {
+                        freq_hz = freq, mode, volume = 0.6,
+                        filter = new { low_hz = lo, high_hz = hi }
+                    });
                     _vrxId = res.GetProperty("vrx_id").GetInt32();
                     _vrxMode = mode;
+                    (_vrxLow, _vrxHigh) = (lo, hi);
                 }
                 else
                 {
@@ -669,7 +730,7 @@ public partial class MainWindow : Window
             });
             _vrxFreq = freq;
             UpdateMarker();
-            StatusText.Text = $"VRX @ {freq / 1e6:F4} MHz ({mode.ToUpper()}) — listening";
+            StatusText.Text = $"VRX @ {freq / 1e6:F4} MHz ({mode.ToUpper()}, {bw / 1000.0:0.0} kHz) — listening";
         }
         catch (Exception ex)
         {

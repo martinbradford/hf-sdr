@@ -145,6 +145,12 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
        click is objectionable the upgrade is a sample-aligned crossfade between two parallel filters (≈2× filter CPU per VRX); a volume ramp from
        the control thread was rejected because it cannot be sample-aligned through GNU Radio's buffers. Also unverified: that `set_taps` on a
        running `fir_filter_ccc` is safe (believed so; the test exercises it). Offline: `test_vrx_update.py`.
+       **Update 2026-10-08:** `test_sideband_flowgraph.py` PASSED on the shack PC (audio follows the sideband, longest pause 32 ms, contiguous seq;
+       click ≈ 2–4× a normal sample jump, measured crudely). Live listening: much better than before but a **brief (sub-second) audio break and
+       waterfall freeze remain**, cause unknown. Planned split test (after the shack PC memory upgrade): switch sideband with
+       `ctl.py update_vrx vrx_id=<id> mode=lsb` instead of the client; freeze persists = server-side, absent = client-side (the client also resends `freq_hz`).
+       **Bandwidth control:** client BW dropdown (0.5/1.0/1.8/2.4/2.8/3.2/4.0 kHz, default 2.8 = the old passbands; low edge fixed at 200 Hz, LSB mirrored;
+       `Passband.cs`) sends `filter` via the same in-place `update_vrx`; persisted as `BandwidthHz` in settings.json. Builds; not yet run live.
      - **Done:** lazy-pirate in `SdrClient.Send` (a timed-out control request now replaces the wedged REQ socket; not retried). **Not started:** §4.4 client-side Job Object (only needed for local `spawn` mode).
      - Open check for the service: run as LocalSystem first (§12.6) — verify it can read
        radioconda and import `gnuradio.sdrplay3`; else log on as the owner's account.

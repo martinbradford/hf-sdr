@@ -25,6 +25,17 @@
           <ComboBoxItem>lsb</ComboBoxItem>
           <ComboBoxItem>usb</ComboBoxItem>
         </ComboBox>
+        <TextBlock Text="BW:" VerticalAlignment="Center"/>
+        <ComboBox x:Name="BwBox" Width="110" SelectedIndex="4" SelectionChanged="OnBandwidthChanged"
+                  ToolTip.Tip="Audio passband width (low edge fixed at 200 Hz). Applied in place, with no gap, on a running receiver.">
+          <ComboBoxItem Tag="500">0.5 kHz</ComboBoxItem>
+          <ComboBoxItem Tag="1000">1.0 kHz</ComboBoxItem>
+          <ComboBoxItem Tag="1800">1.8 kHz</ComboBoxItem>
+          <ComboBoxItem Tag="2400">2.4 kHz</ComboBoxItem>
+          <ComboBoxItem Tag="2800">2.8 kHz</ComboBoxItem>
+          <ComboBoxItem Tag="3200">3.2 kHz</ComboBoxItem>
+          <ComboBoxItem Tag="4000">4.0 kHz</ComboBoxItem>
+        </ComboBox>
         <TextBlock Text="Audio out:" VerticalAlignment="Center"/>
         <ComboBox x:Name="AudioDeviceBox" Width="200"
                   SelectionChanged="OnAudioDeviceChanged"/>

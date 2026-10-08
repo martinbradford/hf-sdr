@@ -19,6 +19,8 @@ public sealed class ClientSettings
     /// <summary>Playback jitter cushion in ms (0-300): audio is held until this much is buffered, trading
     /// that much latency for resilience to network jitter. 0 disables it. Edit settings.json to tune.</summary>
     public int AudioPrimeMs { get; set; } = 80;
+    /// <summary>Audio passband width in Hz for the sideband receiver (one of the BW dropdown presets).</summary>
+    public int BandwidthHz { get; set; } = 2800;
 
     private static string PathFile => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "HfSdr", "settings.json");
