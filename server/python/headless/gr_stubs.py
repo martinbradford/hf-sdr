@@ -22,10 +22,14 @@ def install_gnuradio_stubs():
         def __getattr__(self, name):
             return mock.MagicMock()
 
+    def block_base(name):
+        # permissive base class: `class X(gr.sync_block)` with gr.sync_block.__init__(self, ...) works
+        return type(name, (), {"__init__": lambda self, *a, **k: None})
+
     gr = _Any("gnuradio")
-    gr.gr = types.SimpleNamespace(top_block=type("top_block", (), {}),
-                                  sync_block=type("sync_block", (), {}),
-                                  basic_block=type("basic_block", (), {}),
+    gr.gr = types.SimpleNamespace(top_block=block_base("top_block"),
+                                  sync_block=block_base("sync_block"),
+                                  basic_block=block_base("basic_block"),
                                   sizeof_gr_complex=8, sizeof_float=4)
     for sub in ("blocks", "analog", "fft", "filter", "sdrplay3"):
         setattr(gr, sub, _Any(f"gnuradio.{sub}"))
@@ -35,7 +39,7 @@ def install_gnuradio_stubs():
     sys.modules["gnuradio.fft.window"] = mock.MagicMock()
     sys.modules["gnuradio.filter"].firdes = mock.MagicMock()
     sys.modules["gnuradio.fft"].window = mock.MagicMock()
-    # block base classes used with `class X(gr.sync_block)` etc.
+    # the same base classes on the module itself, for `gnuradio.gr.X` style access
     for n in ("sync_block", "basic_block", "top_block", "hier_block2"):
-        setattr(gr, n, type(n, (), {"__init__": lambda self, *a, **k: None}))
+        setattr(gr, n, block_base(n))
     return True

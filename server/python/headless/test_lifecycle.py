@@ -11,7 +11,9 @@ with a fake SdrServer. Checks:
   (3) `shutdown` with the right token is acknowledged, THEN the server stops
       (srv.stop()/srv.wait() run — the device-deinit path),
   (4) ordinary commands (`hello`) are unaffected,
-  (5) the Publisher counts frames it drops when its send queue is full.
+  (5) the Publisher counts frames it drops when its send queue is full,
+  (6) the stall monitor reports a gap only over its threshold, only when enabled, from the sinks,
+      and logs control-command timing when --debug-stalls is given.
 
 Run:  python server\\python\\headless\\test_lifecycle.py   (needs pyzmq + numpy)
 """
@@ -173,7 +175,71 @@ def test_publisher_drop_counter():
     print("  5 audio sends into a 2-deep queue -> 3 dropped; spectrum counted separately  OK")
 
 
+def test_stall_monitor():
+    print("-- stall monitor --")
+    import contextlib
+    import io
+
+    import numpy as np
+
+    m = server.StallMonitor()
+    m.threshold = 0.05
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        m.tick("x", time.monotonic() - 0.2)       # 200 ms gap -> reported
+        m.tick("x", time.monotonic() - 0.01)      # 10 ms -> not reported
+        m.tick("x", 0.0)                          # first call -> not reported
+    out = buf.getvalue()
+    assert out.count("x: work() not called") == 1 and "stall-monitor" in out, out
+    print("  gap over threshold reported once; short gap and first call ignored  OK")
+
+    sink = server.SpectrumSink(object(), "spectrum/0", 4, lambda: {}, lambda: False)
+    frames = np.zeros((2, 4), dtype=np.float32)
+    saved = server.STALL.enabled, server.STALL.threshold
+    try:
+        server.STALL.enabled, server.STALL.threshold = False, 0.05
+        sink._stall_t = time.monotonic() - 0.3
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            sink.work([frames], [])
+        assert buf.getvalue() == "", "reported while disabled"
+        server.STALL.enabled = True
+        sink._stall_t = time.monotonic() - 0.3
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            sink.work([frames], [])
+        assert "spectrum: work() not called" in buf.getvalue(), buf.getvalue()
+    finally:
+        server.STALL.enabled, server.STALL.threshold = saved
+    print("  spectrum sink reports a stall only when the monitor is enabled  OK")
+
+    cp, sp, ap = free_ports(3)
+    FakeSrv.instances.clear()
+
+    def driver():
+        time.sleep(0.5)
+        call(cp, "list_vrx")
+        call(cp, "get_status")
+        call(cp, "shutdown", {"token": "tok"})
+        return {}
+
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(buf):
+            run_main(["--bind", "127.0.0.1", "--control-port", str(cp), "--stream-port", str(sp),
+                      "--audio-port", str(ap), "--shutdown-token", "tok", "--debug-stalls",
+                      "--stall-ms", "500"], driver)
+    finally:
+        server.STALL.enabled = False
+    out = buf.getvalue()
+    assert "stall-monitor: on: reporting gaps over 500 ms" in out, out
+    assert "control list_vrx handled in" in out, out
+    assert "control get_status" not in out and "control hello" not in out, "noisy commands should be skipped"
+    print("  --debug-stalls: banner printed, control command timing logged, get_status skipped  OK")
+
+
 if __name__ == "__main__":
+    test_stall_monitor()
     test_publisher_drop_counter()
     test_port_clash()
     test_shutdown_refused_without_token()

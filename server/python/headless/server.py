@@ -143,6 +143,57 @@ def bind_or_exit(sock, host, port, name):
 
 
 # --------------------------------------------------------------------------
+# Stall monitor (debug aid, off by default: --debug-stalls or HF_SDR_DEBUG_STALLS=1)
+#
+# Answers "does the whole server pause when X happens, and for how long?". It logs to stderr,
+# with millisecond wall-clock stamps so lines can be lined up with what was done:
+#   * a sink's work() not called for longer than the threshold (the flowgraph, or at least that
+#     chain, stalled; logged when it resumes, so stamp minus duration is when it began),
+#   * a Python watchdog thread waking late (a Python thread holding the GIL, or the process
+#     starved) -- if THIS fires along with the sinks, the pause is the GIL, not GNU Radio,
+#   * how long each non-trivial control command took to handle.
+# A sink gap with a healthy watchdog means the pause is inside the flowgraph.
+# --------------------------------------------------------------------------
+class StallMonitor:
+    def __init__(self):
+        self.enabled = False
+        self.threshold = 0.08                       # seconds
+
+    def enable(self, threshold_ms=80):
+        self.enabled = True
+        self.threshold = max(1, threshold_ms) / 1000.0
+        self.log(f"on: reporting gaps over {self.threshold * 1000:.0f} ms")
+        threading.Thread(target=self._watchdog, daemon=True).start()
+
+    @staticmethod
+    def _stamp():
+        t = time.time()
+        return time.strftime("%H:%M:%S", time.localtime(t)) + f".{int(t * 1000) % 1000:03d}"
+
+    def log(self, msg):
+        print(f"{self._stamp()} stall-monitor: {msg}", file=sys.stderr, flush=True)
+
+    def tick(self, name, last):
+        """Call from a block's work(); pass the value returned last time (0.0 on the first call)."""
+        now = time.monotonic()
+        if last and now - last > self.threshold:
+            self.log(f"{name}: work() not called for {(now - last) * 1000:.0f} ms (resumed now)")
+        return now
+
+    def _watchdog(self):
+        period = 0.005
+        while True:
+            t = time.monotonic()
+            time.sleep(period)
+            lag = time.monotonic() - t - period
+            if lag > self.threshold:
+                self.log(f"python watchdog thread {lag * 1000:.0f} ms late (GIL held, or process starved)")
+
+
+STALL = StallMonitor()
+
+
+# --------------------------------------------------------------------------
 # Publisher: one thread owns the PUB sockets (zmq sockets are not thread-safe,
 # and many GNU Radio work() threads feed them). Sinks enqueue; this drains.
 # --------------------------------------------------------------------------
@@ -293,6 +344,7 @@ class SpectrumSink(gr.sync_block):
         self._last = 0.0
         self._seq = 0
         self.work_count = 0          # every work() call — used to verify init
+        self._stall_t = 0.0
 
     def set_rate(self, rate_hz):
         self._period = 1.0 / max(0.1, rate_hz)
@@ -300,6 +352,8 @@ class SpectrumSink(gr.sync_block):
     def work(self, input_items, output_items):
         inp = input_items[0]
         self.work_count += 1
+        if STALL.enabled:
+            self._stall_t = STALL.tick("spectrum", self._stall_t)
         now = time.monotonic()
         if self._en() and now - self._last >= self._period:
             self._last = now
@@ -316,9 +370,12 @@ class AudioSink(gr.sync_block):
         gr.sync_block.__init__(self, f"audio_sink_{vrx_id}", [np.float32], [])
         self._pub, self._vid, self._rate, self._en = pub, vrx_id, rate, enabled_fn
         self._seq = 0
+        self._stall_t = 0.0
 
     def work(self, input_items, output_items):
         inp = input_items[0]
+        if STALL.enabled:
+            self._stall_t = STALL.tick(f"audio vrx {self._vid}", self._stall_t)
         if self._en():
             i16 = (np.clip(inp, -1.0, 1.0) * 32767).astype("<i2")
             hdr = {"vrx_id": self._vid, "seq": self._seq, "rate_hz": self._rate,
@@ -788,7 +845,10 @@ def control_loop(sock, srv, stop_evt, shutdown_token=None):
             req = json.loads(sock.recv())
             rid = req.get("id")
             try:
+                t_cmd = time.monotonic()
                 result = handle(req.get("cmd"), req.get("params") or {})
+                if STALL.enabled and req.get("cmd") not in ("hello", "get_status"):
+                    STALL.log(f"control {req.get('cmd')} handled in {(time.monotonic() - t_cmd) * 1000:.1f} ms")
                 sock.send_string(json.dumps({"id": rid, "ok": True, "result": result}))
                 if stopping:
                     stop_evt.set()
@@ -815,10 +875,18 @@ def main():
     p.add_argument("--bind", default="*",
                    help="interface to bind all three ports on (default '*' = all "
                         "interfaces; use 127.0.0.1 for local-only)")
+    p.add_argument("--debug-stalls", action="store_true",
+                   default=os.environ.get("HF_SDR_DEBUG_STALLS", "") not in ("", "0"),
+                   help="log gaps in flowgraph/Python activity and control-command timing to stderr "
+                        "(or env HF_SDR_DEBUG_STALLS=1)")
+    p.add_argument("--stall-ms", type=int, default=80,
+                   help="gap length that counts as a stall for --debug-stalls (default 80)")
     p.add_argument("--shutdown-token", default=os.environ.get("HF_SDR_SHUTDOWN_TOKEN"),
                    help="enable the remote 'shutdown' command, gated by this token "
                         "(or env HF_SDR_SHUTDOWN_TOKEN). Without it, shutdown is refused.")
     args = p.parse_args()
+    if args.debug_stalls:
+        STALL.enable(args.stall_ms)
 
     # Bind every socket BEFORE touching the hardware, so a port clash (e.g. a
     # server already running) is a fast, loud, non-zero exit.

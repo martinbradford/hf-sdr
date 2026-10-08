@@ -149,6 +149,12 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
        click ≈ 2–4× a normal sample jump, measured crudely). Live listening: much better than before but a **brief (sub-second) audio break and
        waterfall freeze remain**, cause unknown. Planned split test (after the shack PC memory upgrade): switch sideband with
        `ctl.py update_vrx vrx_id=<id> mode=lsb` instead of the client; freeze persists = server-side, absent = client-side (the client also resends `freq_hz`).
+       **Update 2026-10-08 (later):** BW changes show the same sub-second audio+waterfall pause. The extended `test_sideband_flowgraph.py` (with and
+       without `--with-freq`) passed with `update_vrx` taking 0.1 ms and pauses ≤32 ms, so neither the tap swap nor re-sending the frequency is the
+       cause; it is something only the live system has (RSP source, spectrum chain, or the client). **Stall monitor added** (server `--debug-stalls`
+       / env `HF_SDR_DEBUG_STALLS=1`, `--stall-ms`, default 80): logs to stderr with ms stamps any gap in the spectrum/audio sinks' `work()`, a late
+       Python watchdog thread (= GIL held; if only the sinks stall it is inside the flowgraph) and per-command control timing. Run the server by hand
+       with it (stop the supervisor's server first), change bandwidth in the client, read the log; then repeat from `ctl.py` to split server vs client.
        **Bandwidth control:** client BW dropdown (0.5/1.0/1.8/2.4/2.8/3.2/4.0 kHz, default 2.8 = the old passbands; low edge fixed at 200 Hz, LSB mirrored;
        `Passband.cs`) sends `filter` via the same in-place `update_vrx`; persisted as `BandwidthHz` in settings.json. Builds; not yet run live.
      - **Done:** lazy-pirate in `SdrClient.Send` (a timed-out control request now replaces the wedged REQ socket; not retried). **Not started:** §4.4 client-side Job Object (only needed for local `spawn` mode).
