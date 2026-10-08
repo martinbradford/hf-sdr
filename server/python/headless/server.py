@@ -68,6 +68,57 @@ DEFAULT_FILTERS = {           # audio passband edges (Hz) per mode
 }
 TUNER_MODES = ("single", "diversity")
 
+# lsb/usb/cw share ONE demod chain (xlate -> complex band-pass -> real -> AGC -> ...); they differ
+# only in the band-pass taps, so a change between them is a tap swap on the running filter, with
+# no flowgraph reconfiguration and therefore no gap. Any future mode that needs a different
+# demodulator (am, nfm) is NOT in this set and still needs remove_vrx + add_vrx.
+IN_PLACE_MODES = ("lsb", "usb", "cw")
+SIDEBAND_TRANSITION_HZ = 200
+
+
+def sideband_taps(low_hz, high_hz):
+    """Complex band-pass for a VRX's audio passband, at the post-decimation rate. The tap COUNT
+    depends only on the transition width, so every passband gets the same length (lets set_taps
+    swap them on a running filter without changing its history requirement)."""
+    return firdes.complex_band_pass(1.0, INTER_RATE, low_hz, high_hz, SIDEBAND_TRANSITION_HZ)
+
+
+def resolve_demod_change(cur_mode, mode=None, filt=None):
+    """Validate a requested mode/filter change for a running VRX. Pure (no graph access) so it can
+    be tested without GNU Radio. Returns (new_mode, edges) where edges is (low_hz, high_hz) to
+    apply, or None if nothing about the passband changes. Raises ProtoError otherwise."""
+    new_mode = cur_mode if mode is None else mode
+    if new_mode not in DEFAULT_FILTERS:
+        raise ProtoError("unsupported", f"mode {new_mode} not implemented")
+    if new_mode != cur_mode and not (new_mode in IN_PLACE_MODES and cur_mode in IN_PLACE_MODES):
+        raise ProtoError("unsupported",
+                         f"changing {cur_mode} -> {new_mode} needs a different demodulator; "
+                         f"remove_vrx and add_vrx instead")
+    if filt is not None:
+        try:
+            low, high = filt["low_hz"], filt["high_hz"]
+            lo_f, hi_f = float(low), float(high)
+        except (KeyError, TypeError, ValueError):
+            raise ProtoError("bad_request", "filter needs numeric low_hz and high_hz") from None
+        limit = INTER_RATE / 2 - SIDEBAND_TRANSITION_HZ
+        if not (lo_f < hi_f and -limit <= lo_f and hi_f <= limit):
+            raise ProtoError("bad_request",
+                             f"filter must satisfy -{limit:.0f} <= low_hz < high_hz <= {limit:.0f}")
+        return new_mode, (low, high)
+    if new_mode != cur_mode:
+        return new_mode, DEFAULT_FILTERS[new_mode]       # new mode, its default passband
+    return new_mode, None
+
+
+def apply_demod_change(rec, new_mode, edges):
+    """Swap a VRX's band-pass taps in place and update its record. The running filter picks the
+    new taps up at its next work() call; the VRX keeps its id, AGC state and audio sequence."""
+    if edges is not None:
+        low, high = edges
+        rec["sb"].set_taps(sideband_taps(low, high))
+        rec["filter"] = {"low_hz": low, "high_hz": high}
+    rec["mode"] = new_mode
+
 
 def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
@@ -448,7 +499,7 @@ class SdrServer(gr.top_block):
 
         xlate = gr_filter.freq_xlating_fir_filter_ccf(
             VRX_DECIM, self._lp_taps, freq_hz - self.center, SOURCE_RATE)
-        sb = gr_filter.fir_filter_ccc(1, firdes.complex_band_pass(1.0, INTER_RATE, low, high, 200))
+        sb = gr_filter.fir_filter_ccc(1, sideband_taps(low, high))
         c2r = blocks.complex_to_real(1)
         ag = analog.agc2_ff(1e-1, 1e-2, 0.3, 1.0); ag.set_max_gain(1_024)
         rs = gr_filter.rational_resampler_fff(interpolation=AUDIO_RATE // 1_000,
@@ -458,7 +509,7 @@ class SdrServer(gr.top_block):
         asink = AudioSink(self.pub, vid, AUDIO_RATE, lambda: self._audio_on)
         return {"vrx_id": vid, "freq": int(freq_hz), "mode": mode,
                 "filter": {"low_hz": low, "high_hz": high}, "volume": volume,
-                "chain": [xlate, sb, c2r, ag, rs, vol, asink], "xlate": xlate, "vol": vol}
+                "chain": [xlate, sb, c2r, ag, rs, vol, asink], "xlate": xlate, "sb": sb, "vol": vol}
 
     def _connect_vrx(self, rec):
         self.connect(self._demod_src, rec["chain"][0])
@@ -477,6 +528,9 @@ class SdrServer(gr.top_block):
         r = self._vrx.get(vrx_id)
         if not r:
             raise ProtoError("bad_request", f"no vrx {vrx_id}")
+        # Validate first so a bad request changes nothing, then swap taps in place (no lock()).
+        new_mode, edges = resolve_demod_change(r["mode"], kw.get("mode"), kw.get("filter"))
+        apply_demod_change(r, new_mode, edges)
         if "freq_hz" in kw:
             r["freq"] = int(kw["freq_hz"]); r["xlate"].set_center_freq(r["freq"] - self.center)
         if "volume" in kw:

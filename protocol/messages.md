@@ -107,7 +107,7 @@ in-band receivers).
 | cmd | params | result |
 |-----|--------|--------|
 | `add_vrx` | `{ "freq_hz": <int>, "mode": "<demod>", "filter": {"low_hz":<int>,"high_hz":<int>}, "squelch_dbfs": <int\|null>, "volume": <0..1>, "tuner": <0\|1> }` | `{ "vrx_id": <int> }` |
-| `update_vrx` | `{ "vrx_id": <int>, ...any subset of add_vrx fields... }` | updated VRX object |
+| `update_vrx` | `{ "vrx_id": <int>, ...any subset of add_vrx fields... }` | updated VRX object. **`mode` and `filter` changes among `lsb`/`usb`/`cw` are applied in place** (a band-pass tap swap on the running chain): no flowgraph change and no gap, and the VRX keeps its id and audio `seq`. A change that needs a different demodulator (e.g. to `am`/`nfm`, when implemented) returns `unsupported`; use `remove_vrx` + `add_vrx` for those. The request is atomic: if any part is refused, nothing (including `freq_hz`) is changed. A server that predates this ignored `mode`, so a client should check the returned `mode` equals what it asked for. |
 | `remove_vrx` | `{ "vrx_id": <int> }` | – |
 | `list_vrx` | – | `{ "vrx": [ <vrx object>, ... ] }` |
 

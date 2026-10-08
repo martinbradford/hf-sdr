@@ -21,7 +21,7 @@
         <TextBlock Text="Freq (MHz):" VerticalAlignment="Center"/>
         <TextBox x:Name="FreqBox" Width="110" Text="7.150"/>
         <Button x:Name="TuneBtn" Content="Tune" Click="OnTune"/>
-        <ComboBox x:Name="ModeBox" Width="90" SelectedIndex="0">
+        <ComboBox x:Name="ModeBox" Width="90" SelectedIndex="0" SelectionChanged="OnModeChanged">
           <ComboBoxItem>lsb</ComboBoxItem>
           <ComboBoxItem>usb</ComboBoxItem>
         </ComboBox>

@@ -133,6 +133,16 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
        on a ~30 s colocated run and is **withdrawn**: the sender is not ruled out. **Next test: a 15-minute colocated run
        on the shack PC** (client → `localhost`, `AudioPrimeMs` 250); `late` events there mean the sender is the source.
        Details: `protocol/bandwidth_design.md` §6.1. The laptop's `settings.json` currently has 250.
+     - **Gapless USB/LSB (and CW) switching — written, builds, logic unit-tested offline, NOT yet run against GNU Radio or hardware:**
+       a sideband change used to be client-side `remove_vrx` + `add_vrx`, i.e. two flowgraph `lock()`/`unlock()` reconfigurations (the
+       multi-second gap). lsb/usb/cw share one demod chain and differ only in the band-pass taps, so `update_vrx` now accepts `mode`/`filter`
+       and swaps the taps on the running filter (`server.py`: `resolve_demod_change`, `apply_demod_change`, `IN_PLACE_MODES`); the client calls
+       `update_vrx` (falls back to remove + add for an old server or a mode needing another demodulator) and applies the dropdown immediately.
+       AM/FM (not implemented) would still need remove + add. **TODO at the shack PC:** run `test_sideband_flowgraph.py` (real GNU Radio, no RSP;
+       checks audio follows the sideband, no gap, contiguous seq, and prints the click size at the switch), then listen to a real signal. If the
+       click is objectionable the upgrade is a sample-aligned crossfade between two parallel filters (≈2× filter CPU per VRX); a volume ramp from
+       the control thread was rejected because it cannot be sample-aligned through GNU Radio's buffers. Also unverified: that `set_taps` on a
+       running `fir_filter_ccc` is safe (believed so; the test exercises it). Offline: `test_vrx_update.py`.
      - **Done:** lazy-pirate in `SdrClient.Send` (a timed-out control request now replaces the wedged REQ socket; not retried). **Not started:** §4.4 client-side Job Object (only needed for local `spawn` mode).
      - Open check for the service: run as LocalSystem first (§12.6) — verify it can read
        radioconda and import `gnuradio.sdrplay3`; else log on as the owner's account.

@@ -590,6 +590,16 @@ public partial class MainWindow : Window
         await SetVrx(freq, mode);
     }
 
+    /// <summary>Sideband dropdown changed: apply it to the running receiver now, instead of waiting
+    /// for the next click on the waterfall. With no receiver yet it just sets the mode for the next click.</summary>
+    private async void OnModeChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (!_connected || _vrxId is null || _busy) return;
+        string mode = ModeBox.SelectedIndex == 1 ? "usb" : "lsb";
+        if (mode == _vrxMode) return;
+        await SetVrx(_vrxFreq, mode);
+    }
+
     private async Task SetVrx(long freq, string mode)
     {
         if (!_connected || _busy) return;
@@ -598,9 +608,25 @@ public partial class MainWindow : Window
         {
             await Task.Run(() =>
             {
-                // mode change can't be updated in place -> remove and re-add
                 if (_vrxId != null && mode != _vrxMode)
                 {
+                    // Preferred: change sideband in place on the server (a filter tap swap, no gap).
+                    // A server that predates this ignores "mode" and echoes the old one back, and a
+                    // mode needing a different demodulator is refused as "unsupported"; in both
+                    // cases fall back to remove + add (a brief gap, but it always works).
+                    try
+                    {
+                        var res = _client.Send("update_vrx", new { vrx_id = _vrxId.Value, freq_hz = freq, mode });
+                        if (res.TryGetProperty("mode", out var m) && m.GetString() == mode)
+                        {
+                            _vrxMode = mode;
+                            return;
+                        }
+                    }
+                    catch (InvalidOperationException ex) when (ex.Message.StartsWith("unsupported", StringComparison.Ordinal))
+                    {
+                        // fall through to remove + add
+                    }
                     _client.Send("remove_vrx", new { vrx_id = _vrxId.Value });
                     _vrxId = null;
                 }
