@@ -75,6 +75,23 @@ public partial class MainWindow : Window
         return dev ?? _mmEnum.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
     }
 
+    private bool _launchedThisAttempt;   // the supervisor start in the current Connect was ours
+
+    /// <summary>Open and immediately close the selected output, to learn now whether it is usable.</summary>
+    private void PreflightAudio()
+    {
+        using var w = new WasapiOut(SelectedRenderDevice(), AudioClientShareMode.Shared, true, 150);
+        w.Init(new SilenceProvider(new WaveFormat(48_000, 16, 1)));
+    }
+
+    /// <summary>Plain-English text for the audio errors people actually hit; anything else passes through.</summary>
+    private static string DescribeAudioError(Exception ex) => (uint)ex.HResult switch
+    {
+        0x8889000A => "the device is in use by another program (exclusive mode?) (0x8889000A)",
+        0x88890004 => "the device was unplugged or disabled (0x88890004)",
+        _ => ex.Message,
+    };
+
     /// <summary>(Re)create the output player on the currently selected device.</summary>
     private void StartAudioOut()
     {
@@ -409,14 +426,25 @@ public partial class MainWindow : Window
             string host = _settings.Host;
             int controlPort = 5555, streamPort = 5556, audioPort = 5557;
             _supervisor = null;
+            _launchedThisAttempt = false;
+
+            // Fail fast on a busy audio device BEFORE starting the receiver, so a bad output never leaves
+            // the server holding the RSP.
+            try { PreflightAudio(); }
+            catch (Exception ex)
+            {
+                StatusText.Text = $"Audio output \"{AudioDeviceBox.SelectedItem}\" unavailable: {DescribeAudioError(ex)}\n" +
+                                  "Pick another Audio out device. The receiver was not started.";
+                return;
+            }
 
             if (_settings.UseSupervisor)
             {
                 var sup = new SupervisorClient(host, _settings.SupervisorPort);
+                _supervisor = sup;                            // so a failure below can release what we launch
                 var st = await LaunchViaSupervisorAsync(sup, host);
-                if (st is null) return;                       // status text already explains why
+                if (st is null) { _supervisor = null; return; }   // status text already explains why
                 (controlPort, streamPort, audioPort) = (st.ControlPort, st.StreamPort, st.AudioPort);
-                _supervisor = sup;
             }
 
             StatusText.Text = $"Connecting to {host}…";
@@ -455,7 +483,14 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            StatusText.Text = "Connect failed: " + ex.Message;
+            StatusText.Text = "Connect failed: " + DescribeAudioError(ex);
+            // If this attempt started the server, don't leave it holding the RSP for a client that never attached.
+            var sup = _supervisor;
+            if (_launchedThisAttempt && sup is not null)
+            {
+                try { await Task.Run(() => sup.Stop()); StatusText.Text += "\nReceiver stopped."; }
+                catch { StatusText.Text += "\n(could not stop the receiver: run supervisor\\tools\\release_rsp.cmd)"; }
+            }
             _supervisor = null;
             ResetClient();                                    // drop half-open sockets and handlers
         }
@@ -498,7 +533,7 @@ public partial class MainWindow : Window
             }
             if (st.State is "stopped" or "failed" && !requested)
             {
-                try { await Task.Run(() => sup.Start(_centerHz, mode)); requested = true; }
+                try { await Task.Run(() => sup.Start(_centerHz, mode)); requested = true; _launchedThisAttempt = true; }
                 catch (Exception ex) { StatusText.Text = "Supervisor refused start: " + ex.Message; return null; }
             }
             if (DateTime.UtcNow > deadline)
