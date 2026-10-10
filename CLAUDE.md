@@ -80,7 +80,14 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
      `WasapiOut` — full endpoint names, e.g. a VB-Audio virtual cable to route
      into WSJT-X; switchable live; device list captured at startup).
      **Gain controls** (AGC / RF-gr slider that snaps to LNA steps + shows
-     `lna_state` / IF-gr slider), **single↔diversity tuner radios** (locks UI
+     `lna_state` / IF-gr slider / **AGC level** slider −70…−20 dBFS (the IF AGC setpoint,
+     active with AGC on) / **IF BW** dropdown 200/300/600/1536 kHz (RSP analogue IF filter;
+     server `set_gain` takes `agc_setpoint_dbfs` + `if_bw_hz`, snaps the bandwidth, reports
+     `gain.if_bw_hz` + `if_bw_hz_options`; added to test a short burst of distortion when a strong
+     station keys up — IF-AGC attack vs fixed LNA gain; not yet concluded which setting helps;
+     gr-sdrplay3 exposes **no** IF-AGC attack/decay timing, only on/off + setpoint; the per-VRX
+     *audio* AGC, `agc2_ff` in `server.py`, is a separate thing and fast on both attack and release)),
+     **single↔diversity tuner radios** (locks UI
      during the ~seconds switch, re-adopts the restored VRX, reverts on
      dual-tuner init failure), and a **peak / OVERLOAD readout** (green/amber/red)
      fed by `peak_dbfs`/`overload` in the spectrum header. **Diversity-null UI**
@@ -118,6 +125,7 @@ reception is a first-class feature). Two parts talking over **ZeroMQ**:
      - **Client `supervisor` launch mode — written, builds, NOT yet exercised in the GUI:** `SupervisorClient.cs` (throwaway REQ socket per call = §4.3 for the supervisor path),
        `ClientSettings.cs` (host / use-supervisor / release-on-close in `%APPDATA%\HfSdr\settings.json`), and `MainWindow` Host box, "Start via supervisor", "Release receiver on close"
        (opt-in, default off), "Stop receiver" (stop + disconnect). Connect flow = §12.7: status → start{center,tuner_mode} → poll → attach using the ports the supervisor reports.
+       **Not leaving the RSP held (2026-10-10):** the audio output is opened and closed *before* the receiver is started, so a busy device (e.g. `0x8889000A` = `AUDCLNT_E_DEVICE_IN_USE`, hit when the Windows default pointed at a locked sound card) fails fast; and a server launched by a failed Connect is stopped. Before this, a failed connect left Python holding the RSP and SDRConnect could not see it. "Release receiver on close" now also stops the server when the client only *attached* (asks the supervisor on the host; a no-op if nothing is running). A server started **by hand** has no shutdown token and is unknown to the supervisor, so only `release_rsp` below (or Ctrl-C) stops it. Not yet exercised live: the deliberate-audio-failure and release-on-close paths.
      - **Audio loss/lateness metrics — written, builds, logic unit-checked offline, NOT yet run against a live server:**
        client readout `audio lost/late/dry/resync` (`AudioStats.cs`, tooltip + `%APPDATA%\HfSdr\audio-events.log`) and server
        `get_status` → `streaming.dropped_frames`. TODO at the machines: connect over Wi-Fi, confirm the readout stays
@@ -183,6 +191,12 @@ for Stage 4+. Commit both `.grc` and generated `.py`.
   `... ctl.py set_tuner_mode mode=diversity` | `... ctl.py set_gain rf_gr_db=0` |
   `... ctl.py null_signal center_hz=14005000 width_hz=12000` (diversity: null a
   source; watch `null_depth_db` climb) | `... ctl.py null_signal clear=true`
+- **Free the RSP for other software (SDRConnect etc.):** `supervisor\tools\release_rsp.cmd`
+  (double-click; or `python supervisor\tools\release_rsp.py`). Graceful `stop` via the supervisor, then it
+  looks for anything still listening on 5555–5557 (found by port, because the service's LocalSystem
+  processes hide their command line from an unelevated listing) and reports its PID; `--force` kills it
+  (skips device deinit, may wedge the RSP — then open+close SDRConnect once or
+  `Restart-Service SDRplayAPIService`). Set `HF_SDR_HOST` to stop a remote server (the leftover check is local only).
 - Reliability cycles (both need hardware; not the same thing):
   `server\python\headless\cycle_test.py --cycles 10` flips **single↔diversity** on a running
   server and checks the mode and that spectrum frames flow (written but not yet run on
