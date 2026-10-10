@@ -51,6 +51,8 @@ FEATURES = ["multi_vrx", "diversity", "diversity_null",
             "vrx_inplace_mode_filter"]      # update_vrx applies mode/filter changes (lsb/usb/cw) in place
 BUILD = {}                                  # filled at startup by build_info()
 SOURCE_RATE = 2_000_000
+IF_BW_DEFAULT = 1_536_000                    # widest RSP IF filter at our sample rate
+IF_BW_OPTIONS = [200_000, 300_000, 600_000, 1_536_000]   # RSP low-IF filters (fallback list)
 VRX_DECIM = 40
 INTER_RATE = SOURCE_RATE // VRX_DECIM       # 50 kHz
 AUDIO_RATE = 48_000
@@ -428,7 +430,9 @@ class SdrServer(gr.top_block):
         self.pub = pub
         self.center = int(center)
         self.fft_size = fft_size
-        self.gain = {"agc": True, "if_gr_db": 40, "rf_gr_db": 0, "agc_setpoint_dbfs": -30}
+        self.gain = {"agc": True, "if_gr_db": 40, "rf_gr_db": 0, "agc_setpoint_dbfs": -30,
+                     "if_bw_hz": IF_BW_DEFAULT}
+        self._bw_applied = None            # IF bandwidth last sent to the driver
         self._lna_state = 0                # resulting LNA state after the last RF apply
         self._rf_steps = None              # discrete valid RF reductions (dB), enumerated once
         self._peak_probes = []             # per-tuner raw-stream peak-hold probes
@@ -460,7 +464,8 @@ class SdrServer(gr.top_block):
             raise ProtoError("unsupported", f"tuner mode {mode} not implemented")
         src.set_sample_rate(SOURCE_RATE)
         src.set_center_freq(self.center)       # single-form (both tuners locked in diversity)
-        src.set_bandwidth(1_536_000)
+        src.set_bandwidth(float(self.gain["if_bw_hz"]))
+        self._bw_applied = int(self.gain["if_bw_hz"])
         self.src = src
         self._enumerate_rf_steps()             # discover the discrete LNA steps (cached)
         self._apply_gain()                     # single-form gain (both tuners in diversity)
@@ -551,6 +556,10 @@ class SdrServer(gr.top_block):
         max -> overload. Values are clamped to the live valid range; RF snaps to
         the nearest discrete LNA step. Read-backs record what actually took."""
         g = self.gain
+        bw = int(g["if_bw_hz"])
+        if bw != self._bw_applied:                 # IF filter: only touch the driver on change
+            self.src.set_bandwidth(float(bw))
+            self._bw_applied = bw
         self.src.set_gain_mode(g["agc"])
         if g["agc"]:
             self.src.set_agc_setpoint(g["agc_setpoint_dbfs"])
@@ -655,9 +664,14 @@ class SdrServer(gr.top_block):
         return {**self.gain, "lna_state": self._lna_state,
                 "rf_gr_db_range": list(self._gr_range("RF")),
                 "rf_gr_db_steps": self._rf_steps,
-                "if_gr_db_range": list(self._gr_range("IF"))}
+                "if_gr_db_range": list(self._gr_range("IF")),
+                "if_bw_hz_options": IF_BW_OPTIONS}
 
     def set_gain(self, **kw):
+        if "agc_setpoint_dbfs" in kw:
+            kw["agc_setpoint_dbfs"] = int(_clamp(kw["agc_setpoint_dbfs"], -72, -20))
+        if "if_bw_hz" in kw:   # snap to the nearest filter the RSP has
+            kw["if_bw_hz"] = min(IF_BW_OPTIONS, key=lambda b: abs(b - float(kw["if_bw_hz"])))
         self.gain.update({k: kw[k] for k in self.gain if k in kw})
         self.gain["agc"] = bool(self.gain["agc"])   # keep the driver bool clean
         self._apply_gain()
@@ -799,7 +813,7 @@ class SdrServer(gr.top_block):
             "tuner_mode": self._mode,
             "device": {"name": "RSPduo"},
             "capture": {"center_hz": self.center, "sample_rate_hz": SOURCE_RATE,
-                        "bandwidth_hz": 1_536_000},
+                        "bandwidth_hz": int(self.gain["if_bw_hz"])},
             "gain": self._gain_public(),
             "vrx": [self._vrx_public(v) for v in self._vrx],
             "streaming": {"audio": self._audio_on, "spectrum": self._spectrum_on,

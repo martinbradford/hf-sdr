@@ -223,6 +223,8 @@ public partial class MainWindow : Window
         RfSlider.Value = _rfSteps is null ? GainInt(g, "rf_gr_db", 0)
                                           : NearestRfIndex(GainInt(g, "rf_gr_db", 0));
         IfSlider.Value = GainInt(g, "if_gr_db", 40);
+        SetpointSlider.Value = GainInt(g, "agc_setpoint_dbfs", -30);
+        SelectIfBw(GainInt(g, "if_bw_hz", 1_536_000));
         AgcBox.IsChecked = !g.TryGetProperty("agc", out var agc) || agc.GetBoolean();
         _suppressGain = false;
         ShowGain(g);
@@ -241,7 +243,26 @@ public partial class MainWindow : Window
         RfLabel.Text = lna >= 0 ? $"{rf} dB (LNA {lna})" : $"{rf} dB";
         IfLabel.Text = $"{ifg} dB";
         IfSlider.IsEnabled = !agc;                 // IF is manual only when AGC is off
+        SetpointSlider.IsEnabled = agc;            // the AGC target only matters with AGC on
+        SetpointLabel.Text = $"{GainInt(g, "agc_setpoint_dbfs", (int)SetpointSlider.Value)} dBFS";
     }
+
+    private void SelectIfBw(int hz)
+    {
+        _suppressGain = true;
+        foreach (var it in IfBwBox.Items.OfType<ComboBoxItem>())
+            if (it.Tag is string t && int.Parse(t) == hz) { IfBwBox.SelectedItem = it; break; }
+        _suppressGain = false;
+    }
+
+    private void OnSetpointChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    {
+        if (SetpointLabel is null) return;           // fires during XAML load, before the names exist
+        SetpointLabel.Text = $"{(int)Math.Round(SetpointSlider.Value)} dBFS";
+        QueueGain();
+    }
+
+    private void OnIfBwChanged(object? sender, SelectionChangedEventArgs e) => QueueGain();
 
     private void OnAgcChanged(object? sender, RoutedEventArgs e) => QueueGain();
     private void OnRfGainChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e) => QueueGain();
@@ -269,8 +290,11 @@ public partial class MainWindow : Window
                 int rf = _rfSteps is null ? rfIdx
                        : _rfSteps[Math.Clamp(rfIdx, 0, _rfSteps.Length - 1)];
                 int ifg = (int)Math.Round(IfSlider.Value);
+                int sp = (int)Math.Round(SetpointSlider.Value);
+                int ifBw = IfBwBox.SelectedItem is ComboBoxItem { Tag: string bt } ? int.Parse(bt) : 1_536_000;
                 var res = await Task.Run(() =>
-                    _client.Send("set_gain", new { agc, rf_gr_db = rf, if_gr_db = ifg }));
+                    _client.Send("set_gain", new { agc, rf_gr_db = rf, if_gr_db = ifg,
+                                                   agc_setpoint_dbfs = sp, if_bw_hz = ifBw }));
                 ShowGain(res);
             }
         }

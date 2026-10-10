@@ -42,8 +42,8 @@
         <TextBlock Text="← click the waterfall to tune" VerticalAlignment="Center" Opacity="0.7"/>
       </StackPanel>
 
-      <StackPanel x:Name="ConfigBar" Orientation="Horizontal" Spacing="8"
-                  VerticalAlignment="Center" IsEnabled="False">
+      <WrapPanel x:Name="ConfigBar" Orientation="Horizontal" ItemSpacing="8" LineSpacing="6"
+                 VerticalAlignment="Center" IsEnabled="False">
         <TextBlock Text="Tuner:" VerticalAlignment="Center" FontWeight="Bold"/>
         <RadioButton x:Name="SingleRadio" GroupName="tuner" Content="Single" IsChecked="True"
                      VerticalAlignment="Center" IsCheckedChanged="OnTunerModeChanged"/>
@@ -61,6 +61,19 @@
         <Slider x:Name="IfSlider" Width="150" Minimum="20" Maximum="59"
                 VerticalAlignment="Center" ValueChanged="OnIfGainChanged"/>
         <TextBlock x:Name="IfLabel" Width="60" VerticalAlignment="Center" Text="40 dB"/>
+        <TextBlock Text="AGC level" VerticalAlignment="Center"/>
+        <Slider x:Name="SetpointSlider" Width="120" Minimum="-70" Maximum="-20" TickFrequency="1"
+                IsSnapToTickEnabled="True" VerticalAlignment="Center" ValueChanged="OnSetpointChanged"
+                ToolTip.Tip="IF AGC target level (dBFS). Lower = more headroom for a strong signal that appears suddenly, at the cost of some sensitivity. Only active with AGC on."/>
+        <TextBlock x:Name="SetpointLabel" Width="70" VerticalAlignment="Center" Text="-30 dBFS"/>
+        <TextBlock Text="IF BW" VerticalAlignment="Center"/>
+        <ComboBox x:Name="IfBwBox" Width="100" SelectionChanged="OnIfBwChanged"
+                  ToolTip.Tip="RSP analogue IF filter width. Narrower keeps strong out-of-band signals away from the ADC and AGC. The waterfall span narrows to match.">
+          <ComboBoxItem Tag="200000">200 kHz</ComboBoxItem>
+          <ComboBoxItem Tag="300000">300 kHz</ComboBoxItem>
+          <ComboBoxItem Tag="600000">600 kHz</ComboBoxItem>
+          <ComboBoxItem Tag="1536000">1.536 MHz</ComboBoxItem>
+        </ComboBox>
         <Border Width="1" Background="#444" Margin="4,2"/>
         <Border x:Name="PeakBox" CornerRadius="3" Padding="6,2" VerticalAlignment="Center"
                 Background="Transparent">
@@ -69,7 +82,7 @@
         </Border>
         <TextBlock x:Name="AudioStatsLabel" VerticalAlignment="Center" Margin="8,0,0,0"
                    Text="audio —" Opacity="0.85" FontFamily="Consolas,monospace"/>
-      </StackPanel>
+      </WrapPanel>
 
       <StackPanel x:Name="NullBar" Orientation="Horizontal" Spacing="8"
                   VerticalAlignment="Center" IsEnabled="False">
