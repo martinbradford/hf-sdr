@@ -13,7 +13,7 @@
         <CheckBox x:Name="SupervisorBox" Content="Start via supervisor" VerticalAlignment="Center"
                   ToolTip.Tip="Ask the supervisor service on the host to launch the server (twin-PC). Off = attach to a server already running."/>
         <CheckBox x:Name="ReleaseBox" Content="Release receiver on close" VerticalAlignment="Center"
-                  ToolTip.Tip="Stop the remote server when this window closes (supervisor mode only)."/>
+                  ToolTip.Tip="Ask the supervisor on the host to stop the server when this window closes, freeing the RSP for other software. A server started by hand cannot be stopped this way (use supervisor\tools\release_rsp.cmd)."/>
         <Button x:Name="StopRxBtn" Content="Stop receiver" IsEnabled="False" Click="OnStopReceiver"/>
       </StackPanel>
       <StackPanel Orientation="Horizontal" Spacing="8">

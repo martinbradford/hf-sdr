@@ -1055,9 +1055,12 @@ public partial class MainWindow : Window
     {
         SaveSettings();
         // Opt-in only: the remote PC may be serving another client, so by default leave the receiver running.
-        if (_connected && _supervisor is not null && _settings.ReleaseOnClose)
+        // Also when we merely attached to a server that is already running (no "Start via supervisor"): the
+        // supervisor on that host may still own it, and a stop with nothing running is a harmless no-op.
+        if (_connected && _settings.ReleaseOnClose)
         {
-            try { _supervisor.Stop(2000); } catch { /* best effort */ }
+            var sup = _supervisor ?? new SupervisorClient(_settings.Host, _settings.SupervisorPort);
+            try { sup.Stop(2000); } catch { /* best effort: no supervisor, or it is unreachable */ }
         }
         _nullTimer?.Stop();
         _statsTimer?.Stop();
